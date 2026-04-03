@@ -1,4 +1,4 @@
-// src/App.jsx — Optim'CCAM v5.0 — Toasts + Modales de confirmation
+// src/App.jsx — Optim'CCAM v5.2 — Ajout Email dans le tableau Admin
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
@@ -73,10 +73,9 @@ const searchCCAM = async (term, specialite, maxResults=20) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SYSTÈME DE TOASTS — remplace tous les alert() natifs
+// SYSTÈME DE TOASTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Couleurs et icônes par type
 const TOAST_STYLES = {
   success: { bg:'#065f46', border:'#10b981', icon:'✓' },
   error:   { bg:'#7f1d1d', border:'#ef4444', icon:'✕' },
@@ -123,20 +122,14 @@ function ToastContainer({ toasts, onRemove }) {
   );
 }
 
-// Hook personnalisé pour utiliser les toasts
 function useToast() {
   const [toasts, setToasts] = useState([]);
 
   const showToast = useCallback((message, type='info', duration=3500) => {
     const id = Date.now() + Math.random();
     setToasts(prev => [...prev, { id, message, type, removing:false }]);
-    // Démarre l'animation de sortie 200ms avant la suppression
-    setTimeout(() => {
-      setToasts(prev => prev.map(t => t.id===id ? {...t, removing:true} : t));
-    }, duration - 200);
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id!==id));
-    }, duration);
+    setTimeout(() => { setToasts(prev => prev.map(t => t.id===id ? {...t, removing:true} : t)); }, duration - 200);
+    setTimeout(() => { setToasts(prev => prev.filter(t => t.id!==id)); }, duration);
   }, []);
 
   const removeToast = useCallback((id) => {
@@ -148,7 +141,7 @@ function useToast() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// MODALE DE CONFIRMATION — remplace tous les window.confirm() natifs
+// MODALE DE CONFIRMATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function ConfirmModal({ state, onConfirm, onCancel }) {
@@ -375,6 +368,7 @@ function App() {
   const [error, setError]                             = useState('');
   const [successMessage, setSuccessMessage]           = useState('');
   const [consentChecked, setConsentChecked]           = useState(false);
+  const [proChecked, setProChecked]                   = useState(false);
   const [email, setEmail]           = useState('');
   const [password, setPassword]     = useState('');
   const [nom, setNom]               = useState('');
@@ -672,11 +666,18 @@ function App() {
 
   const handleGoogleLogin = async() => {
     try {
-      const res=await signInWithPopup(auth,new GoogleAuthProvider()), cu=res.user;
-      const s=await getDoc(doc(db,"users",cu.uid));
+      const res = await signInWithPopup(auth, new GoogleAuthProvider()), cu = res.user;
+      const s = await getDoc(doc(db,"users",cu.uid));
       if (!s.exists()) {
-        const p=(cu.displayName||"").split(' ');
-        await setDoc(doc(db,"users",cu.uid),{nom:p.slice(1).join(' ').toUpperCase()||"",prenom:p[0]||"",email:cu.email,rpps:'',telephone:'',specialite:'1',secteur:'2',optam:false,adresse:{numero:'',rue:'',codePostal:'',ville:''},dateCreation:new Date(),lastLogin:new Date(),usageCount:0});
+        let defaultPrenom = ""; let defaultNom = "";
+        if (cu.displayName) {
+          const p = cu.displayName.split(' ');
+          defaultPrenom = p[0] || "";
+          defaultNom = p.slice(1).join(' ').toUpperCase() || "";
+        } else if (cu.email) {
+          defaultPrenom = cu.email.split('@')[0];
+        }
+        await setDoc(doc(db,"users",cu.uid),{nom:defaultNom,prenom:defaultPrenom,email:cu.email,rpps:'',telephone:'',specialite:'1',secteur:'2',optam:false,adresse:{numero:'',rue:'',codePostal:'',ville:''},dateCreation:new Date(),lastLogin:new Date(),usageCount:0});
       } else { await updateDoc(doc(db,"users",cu.uid),{lastLogin:new Date()}); }
       setError('');
     } catch { setError("Erreur lors de la connexion avec Google."); }
@@ -690,12 +691,16 @@ function App() {
 
   const handleRegister = async(e) => {
     e.preventDefault();
-    if (!consentChecked) { setError("Veuillez accepter le RGPD."); return; }
+    if (!consentChecked || !proChecked) { setError("Veuillez cocher les cases obligatoires."); return; }
     try {
-      const r=await createUserWithEmailAndPassword(auth,email,password);
+      const r = await createUserWithEmailAndPassword(auth,email,password);
       await setDoc(doc(db,"users",r.user.uid),{nom:nom.toUpperCase(),prenom,email,rpps,telephone,specialite,secteur:'2',optam:false,adresse:{numero:numeroRue,rue:nomRue,codePostal,ville},dateCreation:new Date(),lastLogin:new Date(),usageCount:0});
       setIsRegistering(false); setError('');
-    } catch { setError("Erreur lors de l'inscription. Vérifiez vos informations."); }
+    } catch (err) { 
+      if (err.code === 'auth/email-already-in-use') setError("Cette adresse email est déjà utilisée.");
+      else if (err.code === 'auth/weak-password') setError("Le mot de passe doit faire au moins 6 caractères.");
+      else setError("Erreur lors de l'inscription : " + err.message);
+    }
   };
 
   const handleResetPassword = async(e) => {
@@ -708,7 +713,7 @@ function App() {
   const updateProfile = async(e) => {
     e.preventDefault();
     try {
-      await updateDoc(doc(db,"users",user.uid),{nom:nom.toUpperCase(),prenom,telephone,specialite,secteur,optam,adresse:{numero:numeroRue,rue:nomRue,codePostal,ville}});
+      await updateDoc(doc(db,"users",user.uid),{nom:nom.toUpperCase(),prenom,telephone,rpps,specialite,secteur,optam,adresse:{numero:numeroRue,rue:nomRue,codePostal,ville}});
       showToast("Profil mis à jour avec succès !", 'success');
     } catch { showToast("Erreur lors de la sauvegarde du profil.", 'error'); }
   };
@@ -806,9 +811,20 @@ function App() {
                 <input type="text" placeholder="Prénom *" value={prenom} onChange={e=>setPrenom(e.target.value)} autoComplete="given-name" required style={{marginBottom:'12px'}} />
               </div>
               <input type="email" placeholder="Email *" value={email} onChange={e=>setEmail(e.target.value)} autoComplete="username" required style={{marginBottom:'12px'}} />
-              <input type="password" placeholder="Mot de passe *" value={password} onChange={e=>setPassword(e.target.value)} autoComplete="new-password" required style={{marginBottom:'12px'}} />
-              <input type="text" placeholder="N° RPPS *" value={rpps} onChange={e=>setRpps(e.target.value)} required style={{marginBottom:'12px'}} />
-              <label className="consent-label"><input type="checkbox" checked={consentChecked} onChange={e=>setConsentChecked(e.target.checked)} required /> J'accepte que mes données soient traitées conformément au RGPD.</label>
+              <input type="password" placeholder="Mot de passe * (min. 6 caractères)" value={password} onChange={e=>setPassword(e.target.value)} autoComplete="new-password" required style={{marginBottom:'12px'}} />
+              <input type="text" placeholder="N° RPPS (Optionnel)" value={rpps} onChange={e=>setRpps(e.target.value)} style={{marginBottom:'12px'}} />
+              
+              <div style={{display:'flex', flexDirection:'column', gap:'8px', marginBottom:'16px'}}>
+                <label className="consent-label">
+                  <input type="checkbox" checked={proChecked} onChange={e=>setProChecked(e.target.checked)} required /> 
+                  Je certifie être un professionnel de santé (ou assistant(e)). *
+                </label>
+                <label className="consent-label">
+                  <input type="checkbox" checked={consentChecked} onChange={e=>setConsentChecked(e.target.checked)} required /> 
+                  J'accepte que mes données soient traitées conformément au RGPD. *
+                </label>
+              </div>
+
               <button type="submit" className="btn btn--success" style={{width:'100%',padding:'12px'}}>Créer mon compte</button>
               <div className="auth-divider">ou</div>
               <button type="button" className="btn-google" onClick={handleGoogleLogin}><img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" style={{width:'18px'}} /> Continuer avec Google</button>
@@ -867,7 +883,7 @@ function App() {
                   <div><label>Nom</label><input type="text" value={nom} onChange={e=>setNom(e.target.value)} style={{marginBottom:'12px'}} /></div>
                   <div><label>Prénom</label><input type="text" value={prenom} onChange={e=>setPrenom(e.target.value)} style={{marginBottom:'12px'}} /></div>
                   <div><label>Email</label><input type="text" value={auth.currentUser?.email} disabled style={{marginBottom:'12px'}} /></div>
-                  <div><label>RPPS</label><input type="text" value={rpps} disabled style={{marginBottom:'12px'}} /></div>
+                  <div><label>RPPS</label><input type="text" value={rpps} onChange={e=>setRpps(e.target.value)} style={{marginBottom:'12px'}} /></div>
                   <div><label>Téléphone</label><input type="tel" value={telephone} onChange={e=>setTelephone(e.target.value)} style={{marginBottom:'12px'}} /></div>
                 </div>
                 <div style={{marginTop:'12px',borderTop:'1px solid var(--color-border-soft)',paddingTop:'16px'}}>
@@ -1059,7 +1075,12 @@ function App() {
                 <tbody>
                   {usersList.map(u=>(
                     <tr key={u.id}>
-                      <td><strong>{u.nom} {u.prenom}</strong><br/><span className="text-muted text-xs">RPPS : {u.rpps}</span></td>
+                      {/* NOUVEAU : Affichage de l'email sous le nom */}
+                      <td>
+                        <strong>{u.nom} {u.prenom}</strong><br/>
+                        <span style={{fontSize:'12px', color:'var(--sky-600)', display:'inline-block', marginBottom:'2px'}}>{u.email}</span><br/>
+                        <span className="text-muted text-xs">RPPS : {u.rpps}</span>
+                      </td>
                       <td><span style={{color:'var(--emerald-600)',fontWeight:'500',fontSize:'12px'}}>{u.lastLogin?.seconds?new Date(u.lastLogin.seconds*1000).toLocaleString():'Jamais'}</span></td>
                       <td style={{textAlign:'center'}}>{u.usageCount||0}</td>
                       <td>
