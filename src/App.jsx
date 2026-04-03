@@ -6,7 +6,7 @@ import { auth, db } from './firebase';
 import {
   signInWithEmailAndPassword, createUserWithEmailAndPassword,
   signOut, onAuthStateChanged, sendPasswordResetEmail,
-  deleteUser, GoogleAuthProvider, signInWithPopup
+  GoogleAuthProvider, signInWithPopup
 } from 'firebase/auth';
 import {
   doc, setDoc, updateDoc, getDoc, deleteDoc,
@@ -361,12 +361,10 @@ function App() {
 
   // Auth & profil
   const [user, setUser]                               = useState(null);
-  const [userProfile, setUserProfile]                 = useState(null);
   const [isRegistering, setIsRegistering]             = useState(false);
   const [isResettingPassword, setIsResettingPassword] = useState(false);
   const [resetMessage, setResetMessage]               = useState('');
   const [error, setError]                             = useState('');
-  const [successMessage, setSuccessMessage]           = useState('');
   const [consentChecked, setConsentChecked]           = useState(false);
   const [proChecked, setProChecked]                   = useState(false);
   const [email, setEmail]           = useState('');
@@ -464,7 +462,7 @@ function App() {
   const loadUserProfile = async(uid) => {
     const s=await getDoc(doc(db,"users",uid));
     if (s.exists()) {
-      const d=s.data(); setUserProfile(d);
+      const d=s.data();
       setNom(d.nom||''); setPrenom(d.prenom||''); setRpps(d.rpps||''); setTelephone(d.telephone||'');
       setNumeroRue(d.adresse?.numero||''); setNomRue(d.adresse?.rue||'');
       setCodePostal(d.adresse?.codePostal||''); setVille(d.adresse?.ville||'');
@@ -556,7 +554,14 @@ function App() {
   const loadTemplateIntoSimulator = (t) => {
     if (!t) return;
     setInterventionName(t.name); setSelectedActs(t.acts);
-    if (t.feeValue>0) { setFeeType(t.feeType||'amount'); setFeeValue(t.feeValue); }
+    // Remet toujours les honoraires — évite qu'une valeur précédente persiste
+    if (t.feeValue > 0) {
+      setFeeType(t.feeType || 'amount');
+      setFeeValue(t.feeValue);
+    } else {
+      setFeeType('amount');
+      setFeeValue(0);
+    }
     setActiveTab('simulator');
     showToast(`"${t.name}" chargé dans le simulateur.`, 'info', 2500);
   };
@@ -721,8 +726,16 @@ function App() {
   const handleDeleteAccount = async() => {
     const ok=await showConfirm("Supprimer définitivement votre compte et toutes vos données ? Cette action est irréversible.", { danger:true, title:'Suppression du compte', confirmLabel:'Supprimer mon compte' });
     if (ok) {
-      try { await deleteDoc(doc(db,"users",auth.currentUser.uid)); await deleteUser(auth.currentUser); }
-      catch { showToast("Veuillez vous reconnecter avant de supprimer votre compte.", 'warning'); }
+      try {
+        // On supprime uniquement le doc Firestore.
+        // La Cloud Function "purgeCompteUtilisateur" prend le relai
+        // et efface automatiquement le compte Firebase Auth.
+        await deleteDoc(doc(db,"users",auth.currentUser.uid));
+        // Déconnexion immédiate côté client (l'app revient à la page login)
+        await signOut(auth);
+      } catch {
+        showToast("Veuillez vous reconnecter avant de supprimer votre compte.", 'warning');
+      }
     }
   };
 
@@ -885,6 +898,17 @@ function App() {
                   <div><label>Email</label><input type="text" value={auth.currentUser?.email} disabled style={{marginBottom:'12px'}} /></div>
                   <div><label>RPPS</label><input type="text" value={rpps} onChange={e=>setRpps(e.target.value)} style={{marginBottom:'12px'}} /></div>
                   <div><label>Téléphone</label><input type="tel" value={telephone} onChange={e=>setTelephone(e.target.value)} style={{marginBottom:'12px'}} /></div>
+                </div>
+
+                {/* Adresse du cabinet — modifiable à tout moment */}
+                <div style={{marginTop:'4px',borderTop:'1px solid var(--color-border-soft)',paddingTop:'14px',marginBottom:'4px'}}>
+                  <div className="card__label" style={{marginBottom:'12px'}}>Adresse du cabinet</div>
+                  <div className="responsive-grid-profile">
+                    <div><label>Rue</label><input type="text" value={nomRue} onChange={e=>setNomRue(e.target.value)} placeholder="Ex : 12 avenue de la Grande Armée" style={{marginBottom:'12px'}} /></div>
+                    <div><label>Complément</label><input type="text" value={numeroRue} onChange={e=>setNumeroRue(e.target.value)} placeholder="Bâtiment, étage..." style={{marginBottom:'12px'}} /></div>
+                    <div><label>Code postal</label><input type="text" value={codePostal} onChange={e=>setCodePostal(e.target.value)} placeholder="75016" style={{marginBottom:'12px'}} /></div>
+                    <div><label>Ville</label><input type="text" value={ville} onChange={e=>setVille(e.target.value)} placeholder="Paris" style={{marginBottom:'12px'}} /></div>
+                  </div>
                 </div>
                 <div style={{marginTop:'12px',borderTop:'1px solid var(--color-border-soft)',paddingTop:'16px'}}>
                   <div className="card__label" style={{marginBottom:'16px'}}>Paramètres de Facturation (CCAM)</div>
@@ -1078,7 +1102,7 @@ function App() {
                       {/* NOUVEAU : Affichage de l'email sous le nom */}
                       <td>
                         <strong>{u.nom} {u.prenom}</strong><br/>
-                        <span style={{fontSize:'12px', color:'var(--sky-600)', display:'inline-block', marginBottom:'2px'}}>{u.email}</span><br/>
+                        <span style={{fontSize:'12px', color:'var(--sky-500)', display:'inline-block', marginBottom:'2px'}}>{u.email}</span><br/>
                         <span className="text-muted text-xs">RPPS : {u.rpps}</span>
                       </td>
                       <td><span style={{color:'var(--emerald-600)',fontWeight:'500',fontSize:'12px'}}>{u.lastLogin?.seconds?new Date(u.lastLogin.seconds*1000).toLocaleString():'Jamais'}</span></td>
