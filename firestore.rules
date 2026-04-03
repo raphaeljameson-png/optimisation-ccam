@@ -1,0 +1,119 @@
+// Chemin : firestore.rules (à la racine du projet, même niveau que firebase.json)
+// Optim'CCAM — Règles de sécurité Firestore
+// À déployer avec : npx firebase deploy --only firestore:rules
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── FONCTIONS UTILITAIRES ────────────────────────────────────────────
+    // Vérifie que l'utilisateur est bien authentifié
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Vérifie que l'utilisateur est le propriétaire du document
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Vérifie que l'utilisateur est l'administrateur
+    function isAdmin() {
+      return isAuthenticated() && request.auth.token.email == "dr.jameson@rachis.paris";
+    }
+
+    // Vérifie que les champs requis sont présents et du bon type
+    function hasValidUserFields() {
+      return request.resource.data.keys().hasAll(['nom', 'prenom', 'email'])
+        && request.resource.data.nom is string
+        && request.resource.data.prenom is string
+        && request.resource.data.email is string;
+    }
+
+    function hasValidTemplateFields() {
+      return request.resource.data.keys().hasAll(['userId', 'name', 'acts'])
+        && request.resource.data.userId is string
+        && request.resource.data.name is string
+        && request.resource.data.acts is list;
+    }
+
+    function hasValidSimulationFields() {
+      return request.resource.data.keys().hasAll(['userId', 'patient', 'acts', 'date'])
+        && request.resource.data.userId is string
+        && request.resource.data.patient is string
+        && request.resource.data.acts is list;
+    }
+
+    // ─── COLLECTION : users ───────────────────────────────────────────────
+    // Chaque médecin ne peut lire et modifier QUE son propre profil.
+    // L'admin peut lire tous les profils (pour le tableau de bord).
+    // Personne ne peut lire le profil d'un autre médecin.
+    match /users/{userId} {
+      // Lecture : propriétaire uniquement, ou admin
+      allow read: if isOwner(userId) || isAdmin();
+
+      // Création : l'utilisateur crée son propre profil à l'inscription
+      allow create: if isOwner(userId) && hasValidUserFields();
+
+      // Mise à jour : propriétaire uniquement (le champ email ne peut pas être changé)
+      allow update: if isOwner(userId)
+        && request.resource.data.email == resource.data.email; // empêche de changer l'email
+
+      // Suppression : propriétaire uniquement, ou admin
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+    // ─── COLLECTION : templates (Favoris) ────────────────────────────────
+    // Chaque médecin ne voit QUE ses propres favoris.
+    // Un médecin ne peut pas lire les favoris d'un autre.
+    match /templates/{templateId} {
+      // Lecture : uniquement si le document appartient à l'utilisateur connecté
+      allow read: if isAuthenticated()
+        && resource.data.userId == request.auth.uid;
+
+      // Création : l'utilisateur ne peut créer des favoris que pour lui-même
+      allow create: if isAuthenticated()
+        && hasValidTemplateFields()
+        && request.resource.data.userId == request.auth.uid;
+
+      // Mise à jour : propriétaire uniquement, et userId ne peut pas être changé
+      allow update: if isAuthenticated()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == request.auth.uid;
+
+      // Suppression : propriétaire uniquement
+      allow delete: if isAuthenticated()
+        && resource.data.userId == request.auth.uid;
+    }
+
+    // ─── COLLECTION : simulations (Historique) ────────────────────────────
+    // Même règle que les templates : chaque médecin ne voit que son historique.
+    match /simulations/{simulationId} {
+      allow read: if isAuthenticated()
+        && resource.data.userId == request.auth.uid;
+
+      allow create: if isAuthenticated()
+        && hasValidSimulationFields()
+        && request.resource.data.userId == request.auth.uid;
+
+      // L'historique n'est pas modifiable (lecture seule après création)
+      allow update: if false;
+
+      // Suppression : propriétaire uniquement
+      allow delete: if isAuthenticated()
+        && resource.data.userId == request.auth.uid;
+    }
+
+    // ─── COLLECTION : actes_ccam (Base CCAM) ─────────────────────────────
+    // Lecture ouverte à tous les utilisateurs authentifiés (nécessaire pour la recherche).
+    // Écriture réservée à l'administrateur uniquement (import CSV).
+    match /actes_ccam/{acteId} {
+      // Lecture : tout utilisateur authentifié peut chercher des actes CCAM
+      allow read: if isAuthenticated();
+
+      // Écriture (create, update, delete) : admin uniquement
+      allow write: if isAdmin();
+    }
+
+  }
+}
