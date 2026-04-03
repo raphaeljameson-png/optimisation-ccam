@@ -1,4 +1,6 @@
-// src/App.jsx — Optim'CCAM v5.2 — Ajout Email dans le tableau Admin
+// src/App.jsx — Optim'CCAM v6.0
+// Import intelligent : CCAM V82 (XLS/CSV) + fichier_complementaire (XLSX)
+// Base stable : v5.6.1 — Aucune perte de fonction
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
@@ -15,7 +17,10 @@ import {
 } from 'firebase/firestore';
 import Papa from 'papaparse';
 import { QRCodeCanvas } from 'qrcode.react';
+import * as XLSX from 'xlsx'; // npm install xlsx
 
+// ─── CONSTANTES ──────────────────────────────────────────────────────────────
+const ACTES_COLLECTION = "actes_ccam_v82"; // Isolé pour la version d'essai V6
 const LOGO_URL    = "https://www.institutorthopedique.paris/wp-content/uploads/2025/07/CROPinstitut-orthopedique-paris-logo-grand.png";
 const ADMIN_EMAIL = "dr.jameson@rachis.paris";
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
@@ -44,17 +49,17 @@ const searchCCAM = async (term, specialite, maxResults=20) => {
   if (!term || term.trim().length < 3) return [];
   const nt = normalizeText(term);
   if (/^[A-Z]{4}\d{3}$/.test(nt)) {
-    try { const s=await getDocs(query(collection(db,"actes_ccam"),where("code","==",nt),where("activite","==",specialite))); return s.docs.map(d=>({id:d.id,...d.data()})); }
+    try { const s=await getDocs(query(collection(db,ACTES_COLLECTION),where("code","==",nt),where("activite","==",specialite))); return s.docs.map(d=>({id:d.id,...d.data()})); }
     catch { return []; }
   }
   const seen=new Map(), queries=[];
   if (/^[A-Z]{1,4}\d{0,3}$/.test(nt)) {
-    queries.push(getDocs(query(collection(db,"actes_ccam"),where("activite","==",specialite),orderBy("code"),startAt(nt),endAt(nt+'\uf8ff'),limit(maxResults))));
+    queries.push(getDocs(query(collection(db,ACTES_COLLECTION),where("activite","==",specialite),orderBy("code"),startAt(nt),endAt(nt+'\uf8ff'),limit(maxResults))));
   }
   const words = nt.split(/[^A-Z0-9]+/).filter(w=>w.length>=2);
   if (words.length>0) {
     const best = words.reduce((a,b)=>a.length>=b.length?a:b);
-    queries.push(getDocs(query(collection(db,"actes_ccam"),where("activite","==",specialite),where("motsCles","array-contains",best),limit(400))));
+    queries.push(getDocs(query(collection(db,ACTES_COLLECTION),where("activite","==",specialite),where("motsCles","array-contains",best),limit(400))));
   }
   try {
     const snaps = await Promise.all(queries);
@@ -92,28 +97,16 @@ function ToastContainer({ toasts, onRemove }) {
         .toast-item { animation: toastIn 0.28s cubic-bezier(0.34,1.56,0.64,1) forwards; }
         .toast-item.removing { animation: toastOut 0.22s ease-in forwards; }
       `}</style>
-      <div style={{
-        position:'fixed', bottom:'24px', right:'24px', zIndex:9999,
-        display:'flex', flexDirection:'column', gap:'10px',
-        maxWidth:'340px', width:'calc(100vw - 48px)'
-      }}>
+      <div style={{position:'fixed',bottom:'24px',right:'24px',zIndex:9999,display:'flex',flexDirection:'column',gap:'10px',maxWidth:'340px',width:'calc(100vw - 48px)'}}>
         {toasts.map(t => {
           const s = TOAST_STYLES[t.type] || TOAST_STYLES.info;
           return (
-            <div key={t.id} className={`toast-item${t.removing?' removing':''}`} style={{
-              display:'flex', alignItems:'flex-start', gap:'12px',
-              background:s.bg, border:`1px solid ${s.border}`,
-              borderRadius:'10px', padding:'13px 15px',
-              boxShadow:'0 8px 24px rgba(0,0,0,0.3)', cursor:'pointer'
-            }} onClick={()=>onRemove(t.id)}>
-              <span style={{
-                width:'22px', height:'22px', borderRadius:'50%',
-                background:s.border, color:'#fff',
-                display:'flex', alignItems:'center', justifyContent:'center',
-                fontSize:'12px', fontWeight:'700', flexShrink:0
-              }}>{s.icon}</span>
-              <span style={{flex:1, fontSize:'13px', color:'#fff', lineHeight:'1.45', fontFamily:'var(--font-body)'}}>{t.message}</span>
-              <span style={{color:'rgba(255,255,255,0.5)', fontSize:'16px', lineHeight:1, flexShrink:0}}>×</span>
+            <div key={t.id} className={`toast-item${t.removing?' removing':''}`}
+              style={{display:'flex',alignItems:'flex-start',gap:'12px',background:s.bg,border:`1px solid ${s.border}`,borderRadius:'10px',padding:'13px 15px',boxShadow:'0 8px 24px rgba(0,0,0,0.3)',cursor:'pointer'}}
+              onClick={()=>onRemove(t.id)}>
+              <span style={{width:'22px',height:'22px',borderRadius:'50%',background:s.border,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'12px',fontWeight:'700',flexShrink:0}}>{s.icon}</span>
+              <span style={{flex:1,fontSize:'13px',color:'#fff',lineHeight:'1.45',fontFamily:'var(--font-body)'}}>{t.message}</span>
+              <span style={{color:'rgba(255,255,255,0.5)',fontSize:'16px',lineHeight:1,flexShrink:0}}>×</span>
             </div>
           );
         })}
@@ -124,19 +117,16 @@ function ToastContainer({ toasts, onRemove }) {
 
 function useToast() {
   const [toasts, setToasts] = useState([]);
-
   const showToast = useCallback((message, type='info', duration=3500) => {
     const id = Date.now() + Math.random();
     setToasts(prev => [...prev, { id, message, type, removing:false }]);
-    setTimeout(() => { setToasts(prev => prev.map(t => t.id===id ? {...t, removing:true} : t)); }, duration - 200);
-    setTimeout(() => { setToasts(prev => prev.filter(t => t.id!==id)); }, duration);
+    setTimeout(() => setToasts(prev => prev.map(t => t.id===id ? {...t,removing:true} : t)), duration-200);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id!==id)), duration);
   }, []);
-
   const removeToast = useCallback((id) => {
-    setToasts(prev => prev.map(t => t.id===id ? {...t, removing:true} : t));
+    setToasts(prev => prev.map(t => t.id===id ? {...t,removing:true} : t));
     setTimeout(() => setToasts(prev => prev.filter(t => t.id!==id)), 220);
   }, []);
-
   return { toasts, showToast, removeToast };
 }
 
@@ -147,41 +137,15 @@ function useToast() {
 function ConfirmModal({ state, onConfirm, onCancel }) {
   if (!state.isOpen) return null;
   return (
-    <div style={{
-      position:'fixed', inset:0, background:'rgba(5,15,31,0.7)',
-      display:'flex', alignItems:'center', justifyContent:'center',
-      zIndex:8000, padding:'20px', backdropFilter:'blur(2px)'
-    }}>
-      <div style={{
-        background:'var(--color-surface)', borderRadius:'16px',
-        padding:'28px', maxWidth:'380px', width:'100%',
-        boxShadow:'0 20px 60px rgba(0,0,0,0.3)',
-        borderTop: state.danger ? '4px solid var(--rose-500)' : '4px solid var(--sky-500)'
-      }}>
-        <div style={{fontSize:'15px', fontWeight:'600', color:'var(--color-text-primary)', marginBottom:'8px'}}>
-          {state.title || 'Confirmation'}
-        </div>
-        <div style={{fontSize:'14px', color:'var(--color-text-secondary)', lineHeight:'1.5', marginBottom:'24px'}}>
-          {state.message}
-        </div>
-        <div style={{display:'flex', gap:'10px'}}>
-          <button
-            onClick={onCancel}
-            style={{
-              flex:1, padding:'10px', borderRadius:'8px', border:'1px solid var(--color-border)',
-              background:'transparent', color:'var(--color-text-secondary)',
-              fontSize:'13px', fontWeight:'500', cursor:'pointer', fontFamily:'var(--font-body)'
-            }}
-          >Annuler</button>
-          <button
-            onClick={onConfirm}
-            style={{
-              flex:1, padding:'10px', borderRadius:'8px', border:'none',
-              background: state.danger ? 'var(--rose-500)' : 'var(--navy-800)',
-              color:'#fff', fontSize:'13px', fontWeight:'600',
-              cursor:'pointer', fontFamily:'var(--font-body)'
-            }}
-          >{state.confirmLabel || 'Confirmer'}</button>
+    <div style={{position:'fixed',inset:0,background:'rgba(5,15,31,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:8000,padding:'20px',backdropFilter:'blur(2px)'}}>
+      <div style={{background:'var(--color-surface)',borderRadius:'16px',padding:'28px',maxWidth:'380px',width:'100%',boxShadow:'0 20px 60px rgba(0,0,0,0.3)',borderTop:state.danger?'4px solid var(--rose-500)':'4px solid var(--sky-500)'}}>
+        <div style={{fontSize:'15px',fontWeight:'600',color:'var(--color-text-primary)',marginBottom:'8px'}}>{state.title||'Confirmation'}</div>
+        <div style={{fontSize:'14px',color:'var(--color-text-secondary)',lineHeight:'1.5',marginBottom:'24px'}}>{state.message}</div>
+        <div style={{display:'flex',gap:'10px'}}>
+          <button onClick={onCancel} style={{flex:1,padding:'10px',borderRadius:'8px',border:'1px solid var(--color-border)',background:'transparent',color:'var(--color-text-secondary)',fontSize:'13px',fontWeight:'500',cursor:'pointer',fontFamily:'var(--font-body)'}}>Annuler</button>
+          <button onClick={onConfirm} style={{flex:1,padding:'10px',borderRadius:'8px',border:'none',background:state.danger?'var(--rose-500)':'var(--navy-800)',color:'#fff',fontSize:'13px',fontWeight:'600',cursor:'pointer',fontFamily:'var(--font-body)'}}>
+            {state.confirmLabel||'Confirmer'}
+          </button>
         </div>
       </div>
     </div>
@@ -191,17 +155,14 @@ function ConfirmModal({ state, onConfirm, onCancel }) {
 function useConfirm() {
   const [state, setState] = useState({ isOpen:false, message:'', title:'', danger:false, confirmLabel:'Confirmer' });
   const resolveRef = useRef(null);
-
   const showConfirm = useCallback((message, options={}) => {
     return new Promise((resolve) => {
       resolveRef.current = resolve;
       setState({ isOpen:true, message, title:options.title||'Confirmation', danger:options.danger||false, confirmLabel:options.confirmLabel||'Confirmer' });
     });
   }, []);
-
   const handleConfirm = () => { setState(s=>({...s,isOpen:false})); resolveRef.current?.(true); };
   const handleCancel  = () => { setState(s=>({...s,isOpen:false})); resolveRef.current?.(false); };
-
   return { confirmState:state, showConfirm, handleConfirm, handleCancel };
 }
 
@@ -283,7 +244,7 @@ function FeeBox({ feeType, feeValue, onTypeChange, onValueChange }) {
   );
 }
 
-function SearchAutocomplete({ specialite, userSecteur, isOptam, onSelect, maxActs, placeholder="Code CCAM ou mots-clés..." }) {
+function SearchAutocomplete({ specialite, userSecteur, isOptam, onSelect, maxActs, placeholder="Code CCAM ou mots-clés...", maxResults=20 }) {
   const [term, setTerm]           = useState('');
   const [results, setResults]     = useState([]);
   const [isOpen, setIsOpen]       = useState(false);
@@ -301,13 +262,13 @@ function SearchAutocomplete({ specialite, userSecteur, isOptam, onSelect, maxAct
     setIsLoading(true); setHasSearched(false);
     const t = setTimeout(async()=>{
       try {
-        const res = await searchCCAM(term, specialite, 20);
+        const res = await searchCCAM(term, specialite, maxResults);
         setResults(res); setIsOpen(true); setHasSearched(true);
       } catch { setResults([]); setIsOpen(true); setHasSearched(true); }
       finally { setIsLoading(false); }
     }, 350);
     return ()=>clearTimeout(t);
-  }, [term, specialite]);
+  }, [term, specialite, maxResults]);
 
   const handleSelect = (act) => { onSelect(act); setTerm(''); setResults([]); setIsOpen(false); setHasSearched(false); };
 
@@ -324,7 +285,7 @@ function SearchAutocomplete({ specialite, userSecteur, isOptam, onSelect, maxAct
       {isOpen && results.length>0 && (
         <div style={{position:'absolute',top:'calc(100% + 4px)',left:0,right:0,background:'var(--color-surface)',border:'1px solid var(--color-border)',borderRadius:'var(--radius-md)',boxShadow:'0 8px 24px rgba(15,23,42,0.12)',zIndex:300,maxHeight:'320px',overflowY:'auto'}}>
           <div style={{padding:'8px 12px',fontSize:'11px',fontWeight:'600',color:'var(--color-text-muted)',letterSpacing:'0.5px',borderBottom:'1px solid var(--color-border-soft)',textTransform:'uppercase'}}>
-            {results.length} résultat{results.length>1?'s':''} — cliquer pour ajouter
+            {results.length} résultat{results.length>1?'s':''} — cliquer pour voir
           </div>
           {results.map(act=>{
             const displayTarif=(userSecteur==='1'||isOptam)?act.tarifSecteur1:act.tarifSecteur2;
@@ -345,7 +306,7 @@ function SearchAutocomplete({ specialite, userSecteur, isOptam, onSelect, maxAct
       {isOpen && hasSearched && results.length===0 && !isLoading && (
         <div style={{position:'absolute',top:'calc(100% + 4px)',left:0,right:0,background:'var(--color-surface)',border:'1px solid var(--color-border)',borderRadius:'var(--radius-md)',padding:'14px 12px',fontSize:'13px',color:'var(--color-text-muted)',textAlign:'center',boxShadow:'0 8px 24px rgba(15,23,42,0.08)',zIndex:300}}>
           Aucun acte trouvé pour « {term} »<br/>
-          <span style={{fontSize:'11px',opacity:0.7}}>Vérifiez l'onglet Admin → ré-importer le CSV</span>
+          <span style={{fontSize:'11px',opacity:0.7}}>Vérifiez l'onglet Admin → ré-importer les fichiers</span>
         </div>
       )}
     </div>
@@ -355,7 +316,6 @@ function SearchAutocomplete({ specialite, userSecteur, isOptam, onSelect, maxAct
 // ─── COMPOSANT PRINCIPAL ──────────────────────────────────────────────────────
 function App() {
 
-  // Systèmes Toast & Confirm
   const { toasts, showToast, removeToast }               = useToast();
   const { confirmState, showConfirm, handleConfirm, handleCancel } = useConfirm();
 
@@ -381,9 +341,21 @@ function App() {
   const [secteur, setSecteur]       = useState('2');
   const [optam, setOptam]           = useState(false);
 
-  // Simulateur
+  const [saveStatus, setSaveStatus]     = useState('');
+  const [favoriteActs, setFavoriteActs] = useState([]);
+  const initialLoadDone                 = useRef(false);
+
+  // Navigateur
+  const [browserView, setBrowserView]               = useState('search');
+  const [selectedBrowserAct, setSelectedBrowserAct] = useState(null);
+
+  // Import — 3 fichiers ATIH sélectionnés simultanément
+  const [importFiles, setImportFiles] = useState([]);
   const [isUploading, setIsUploading]           = useState(false);
   const [uploadProgress, setUploadProgress]     = useState(0);
+  const [uploadStep, setUploadStep]             = useState('');
+
+  // Simulateur
   const [selectedActs, setSelectedActs]         = useState([]);
   const [feeType, setFeeType]                   = useState('amount');
   const [feeValue, setFeeValue]                 = useState(0);
@@ -401,13 +373,12 @@ function App() {
   const [favFeeType, setFavFeeType]                     = useState('amount');
   const [favFeeValue, setFavFeeValue]                   = useState(0);
 
-  // Historique & navigation
   const [simulations, setSimulations]                   = useState([]);
   const [isLoadingSimulations, setIsLoadingSimulations] = useState(false);
   const [sharedTemplate, setSharedTemplate]             = useState(null);
   const [incomingTemplate, setIncomingTemplate]         = useState(null);
   const [usersList, setUsersList]                       = useState([]);
-  const [activeTab, setActiveTab]                       = useState('simulator');
+  const [activeTab, setActiveTab]                       = useState('browser');
 
   const unsubTemplatesRef   = useRef(null);
   const unsubSimulationsRef = useRef(null);
@@ -415,7 +386,6 @@ function App() {
   const encodeTemplate = (t) => btoa(encodeURIComponent(JSON.stringify({n:t.name,a:t.acts,ft:t.feeType||'amount',fv:t.feeValue||0,cat:t.category||''})));
   const decodeTemplate = (h) => { try { return JSON.parse(decodeURIComponent(atob(h))); } catch { return null; } };
 
-  // Listeners temps réel
   const subscribeTemplates = (uid) => {
     if (unsubTemplatesRef.current) unsubTemplatesRef.current();
     setIsLoadingTemplates(true);
@@ -447,13 +417,16 @@ function App() {
     const unsubAuth = onAuthStateChanged(auth, async(cu)=>{
       setUser(cu);
       if (cu) {
+        initialLoadDone.current = false;
         await loadUserProfile(cu.uid);
         subscribeTemplates(cu.uid);
         subscribeSimulations(cu.uid);
         if (cu.email===ADMIN_EMAIL) fetchUsersList();
       } else {
         unsubscribeAll();
-        setUserProfile(null); setTemplates([]); setSimulations([]); setUsersList([]);
+        setTemplates([]); setSimulations([]); setUsersList([]);
+        setSelectedBrowserAct(null); setFavoriteActs([]);
+        initialLoadDone.current = false;
       }
     });
     return ()=>{ unsubAuth(); unsubscribeAll(); };
@@ -467,12 +440,39 @@ function App() {
       setNumeroRue(d.adresse?.numero||''); setNomRue(d.adresse?.rue||'');
       setCodePostal(d.adresse?.codePostal||''); setVille(d.adresse?.ville||'');
       setSpecialite(d.specialite||'1'); setSecteur(d.secteur||'2'); setOptam(d.optam||false);
+      setFavoriteActs(d.favoriteActs || []);
+      setTimeout(() => { initialLoadDone.current = true; }, 800);
     }
   };
+
+  useEffect(() => {
+    if (!initialLoadDone.current || !user) return;
+    setSaveStatus('Enregistrement en cours...');
+    const timer = setTimeout(async () => {
+      try {
+        await updateDoc(doc(db,"users",user.uid), {
+          nom: nom.toUpperCase(), prenom, telephone, rpps, specialite, secteur, optam,
+          adresse: { numero: numeroRue, rue: nomRue, codePostal, ville }
+        });
+        setSaveStatus('Enregistré ✓');
+        setTimeout(() => setSaveStatus(''), 3000);
+      } catch { setSaveStatus('Erreur de sauvegarde'); }
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, [nom, prenom, telephone, rpps, specialite, secteur, optam, numeroRue, nomRue, codePostal, ville, user]);
 
   const fetchUsersList = async() => {
     try { const s=await getDocs(collection(db,"users")); setUsersList(s.docs.map(d=>({id:d.id,...d.data()}))); }
     catch(e) { console.error(e); }
+  };
+
+  const toggleFavoriteAct = async (act) => {
+    const isFav = favoriteActs.some(a => a.code === act.code);
+    const newFavs = isFav ? favoriteActs.filter(a => a.code !== act.code) : [...favoriteActs, act];
+    setFavoriteActs(newFavs);
+    showToast(isFav ? "Code retiré de vos favoris." : "Code ajouté à vos favoris !", isFav ? "info" : "success", 2000);
+    try { await updateDoc(doc(db,"users",user.uid), { favoriteActs: newFavs }); }
+    catch { showToast("Erreur lors de la sauvegarde du favori.", "error"); }
   };
 
   const handleAcceptSharedTemplate = async() => {
@@ -536,6 +536,13 @@ function App() {
   const startCreateFav = () => { setIsEditingFav(true); setCurrentFavId(null); setFavNameInput(''); setFavCategoryInput(''); setFavActsInput([]); setFavFeeType('amount'); setFavFeeValue(0); };
   const startEditFav   = (t) => { setIsEditingFav(true); setCurrentFavId(t.id); setFavNameInput(t.name); setFavCategoryInput(t.category||''); setFavActsInput(t.acts); setFavFeeType(t.feeType||'amount'); setFavFeeValue(t.feeValue||0); };
 
+  const addActToSimulatorFromBrowser = (act) => {
+    if (selectedActs.length >= 3) { showToast("Le simulateur est plein (3 actes maximum).", "warning"); setActiveTab('simulator'); return; }
+    setSelectedActs(p => [...p, { ...act, activeModifiers: { J: true } }]);
+    setActiveTab('simulator');
+    showToast(`Acte ${act.code} envoyé au simulateur.`, 'success');
+  };
+
   const saveFavChanges = async() => {
     if (!favNameInput||!favActsInput.length) { showToast("Le nom et au moins un acte sont requis.", 'warning'); return; }
     const data={userId:user.uid,name:favNameInput,category:favCategoryInput||'Non classé',acts:favActsInput,feeType:favFeeType,feeValue:parseFloat(favFeeValue)||0};
@@ -554,14 +561,8 @@ function App() {
   const loadTemplateIntoSimulator = (t) => {
     if (!t) return;
     setInterventionName(t.name); setSelectedActs(t.acts);
-    // Remet toujours les honoraires — évite qu'une valeur précédente persiste
-    if (t.feeValue > 0) {
-      setFeeType(t.feeType || 'amount');
-      setFeeValue(t.feeValue);
-    } else {
-      setFeeType('amount');
-      setFeeValue(0);
-    }
+    if (t.feeValue > 0) { setFeeType(t.feeType || 'amount'); setFeeValue(t.feeValue); }
+    else                { setFeeType('amount'); setFeeValue(0); }
     setActiveTab('simulator');
     showToast(`"${t.name}" chargé dans le simulateur.`, 'info', 2500);
   };
@@ -619,54 +620,242 @@ function App() {
     const ok=await showConfirm("Vider TOUS les actes CCAM de la base ? Cette action est irréversible.", { danger:true, title:'Nettoyer la base', confirmLabel:'Vider la base' });
     if (!ok) return;
     setIsUploading(true);
-    const snap=await getDocs(collection(db,"actes_ccam")); let i=0;
+    const snap=await getDocs(collection(db,ACTES_COLLECTION)); let i=0;
     while (i<snap.docs.length) {
       const batch=writeBatch(db);
       snap.docs.slice(i,i+400).forEach(d=>batch.delete(d.ref));
       await batch.commit(); i+=400; setUploadProgress(Math.round((i/snap.docs.length)*100));
     }
-    showToast("Base CCAM nettoyée. Vous pouvez ré-importer le CSV.", 'info');
+    showToast("Base CCAM nettoyée. Vous pouvez ré-importer les fichiers.", 'info');
     setIsUploading(false); setUploadProgress(0);
   };
 
-  const handleFileUpload = (event) => {
-    const file=event.target.files[0]; if (!file) return;
-    setIsUploading(true); setUploadProgress(1);
-    Papa.parse(file,{skipEmptyLines:true,complete:async({data:rows})=>{
-      const valid=rows.filter(r=>r[0]?.toString().trim().length===7);
-      if (!valid.length) { showToast("Fichier invalide ou vide.", 'error'); setIsUploading(false); return; }
-      const CHUNK=200;
-      try {
-        for (let i=0;i<valid.length;i+=CHUNK) {
-          const batch=writeBatch(db);
-          valid.slice(i,i+CHUNK).forEach(acte=>{
-            const code=acte[0].toString().trim().toUpperCase();
-            const libelle=(acte[2]||"").toString().trim();
-            const actId=(acte[3]||"1").toString(), phaId=(acte[4]||"0").toString();
-            const s1=acte[5]?parseFloat(acte[5].toString().replace(',','.')):0;
-            const s2=acte[6]?parseFloat(acte[6].toString().replace(',','.')):s1;
-            const libelleNorm=normalizeText(libelle);
-            const words=libelleNorm.split(/[^A-Z0-9]+/).filter(w=>w.length>=2);
-            const mc=new Set();
-            words.forEach(w=>{ mc.add(w); for(let l=2;l<w.length;l++) mc.add(w.substring(0,l)); });
-            if (words.includes("CALCANEUS"))  mc.add("CALCANEUM");
-            if (words.includes("CALCANEUM"))  mc.add("CALCANEUS");
-            if (words.includes("ASTRAGALE"))  mc.add("TALUS");
-            if (words.includes("TALUS"))      mc.add("ASTRAGALE");
-            if (words.includes("ROTULE"))     mc.add("PATELLA");
-            if (words.includes("PATELLA"))    mc.add("ROTULE");
-            if (words.includes("SCAPULA"))    mc.add("OMOPLATE");
-            if (words.includes("OMOPLATE"))   mc.add("SCAPULA");
-            batch.set(doc(db,"actes_ccam",`${code}_A${actId}_P${phaId}`),{code,libelle,activite:actId,phase:phaId,tarifSecteur1:isNaN(s1)?0:s1,tarifSecteur2:isNaN(s2)?0:s2,motsCles:[...mc],libelleSearch:libelleNorm});
-          });
-          await batch.commit();
-          setUploadProgress(Math.round(((i+Math.min(CHUNK,valid.length-i))/valid.length)*100));
-          await delay(100);
+  // ── LECTURE XLSX/XLS AVEC SHEETJS ─────────────────────────────────────────
+  const readXlsx = async (file, sheetName) => {
+    const buffer = await file.arrayBuffer();
+    const wb = XLSX.read(buffer, { type: 'array', cellDates: false });
+    const wsName = sheetName && wb.SheetNames.includes(sheetName)
+      ? sheetName
+      : wb.SheetNames[0];
+    const ws = wb.Sheets[wsName];
+    // header:1 → tableau de tableaux (indices identiques à openpyxl Python)
+    // defval:'' → cellules vides = chaîne vide (pas undefined)
+    return XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  };
+
+  // ── LECTURE CSV AVEC PAPAPARSE (fallback V82 CSV) ─────────────────────────
+  const readCsv = (file) => new Promise((res, rej) => {
+    Papa.parse(file, {
+      delimiter: ';',
+      skipEmptyLines: false,  // on garde les lignes vides pour détecter les séparateurs
+      complete: r => res(r.data),
+      error: rej
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // MOTEUR D'IMPORT V6.0
+  // Entrées :
+  //   - Fichier 1 : CCAM_V82 (XLS ou CSV) → tarifs Secteur 1/2
+  //   - Fichier 2 : fichier_complementaire_ccam_... (XLSX) → arborescence + notes
+  //
+  // Algorithme :
+  //   Étape 1 → tarifsMap  : code+activite+phase → {s1, s2}
+  //   Étape 2 → sectionNotes : code_section → [notes NT]  (PILE HIÉRARCHIQUE)
+  //   Étape 3 → actsToUpload : fusion tarifs + arborescence + notes héritées
+  //   Étape 4 → Firestore batch (200 docs/batch)
+  // ══════════════════════════════════════════════════════════════════════════
+  const handleImportCCAM = async () => {
+    // Détection automatique par préfixe de nom de fichier
+    // - CCAM_V* → tarifs (XLS ou CSV, fourni par la CNAM)
+    // - fichier_complementaire_ccam* → arborescence + notes (XLSX, fourni par l'ATIH)
+    // - liste_analytique_ccam* → ignoré (redondant avec fichier_complementaire)
+    const v82File   = importFiles.find(f => f.name.toLowerCase().startsWith('ccam_v'));
+    const compFile  = importFiles.find(f => f.name.toLowerCase().startsWith('fichier_complementaire_ccam') || f.name.toLowerCase().startsWith('bis'));
+    const analFile  = importFiles.find(f => f.name.toLowerCase().startsWith('liste_analytique_ccam'));
+
+    if (!v82File)  { showToast("Fichier CCAM_V82_... introuvable. Nommez-le 'CCAM_V82_...' ou 'CCAM_V...'", "warning", 5000); return; }
+    if (!compFile) { showToast("Fichier fichier_complementaire_ccam_... introuvable.", "warning", 5000); return; }
+    if (analFile)  { showToast("liste_analytique détecté — ignoré (fichier_complementaire est suffisant).", "info", 3000); }
+
+    setIsUploading(true); setUploadProgress(0);
+
+    try {
+      // ── ÉTAPE 1 : Lecture du fichier V82 (XLS ou CSV) → tarifsMap ─────
+      setUploadStep("Lecture des tarifs (CCAM V82)...");
+      const tarifsMap = new Map(); // clé: "CODE_A1_P0" → {s1, s2}
+
+      // SheetJS lit XLS, XLSX et CSV — pas besoin de distinguer
+      const v82Rows = await readXlsx(v82File, null);
+
+      v82Rows.forEach(row => {
+        const code = String(row[0] || '').trim();
+        if (code.length !== 7) return; // ignore chapitres et lignes vides
+        const actId = String(row[3] || '1').trim();
+        const phaId = String(row[4] || '0').trim();
+        const raw1  = String(row[5] || '').replace(',', '.');
+        const raw2  = String(row[6] || '').replace(',', '.');
+        const s1 = parseFloat(raw1) || 0;
+        const s2 = parseFloat(raw2) || s1;
+        tarifsMap.set(`${code}_A${actId}_P${phaId}`, { s1, s2 });
+      });
+
+      showToast(`${tarifsMap.size} tarifs chargés.`, 'info', 2000);
+      setUploadProgress(15);
+
+      // ── ÉTAPE 2 : Lecture du fichier_complementaire (XLSX) ────────────
+      setUploadStep("Lecture de l'arborescence CCAM...");
+      const compRows = await readXlsx(compFile, 'CCAM_Final_2026');
+      // Row 0 = headers → on commence à Row 1
+
+      // Pile hiérarchique des notes de section
+      // La clé est le code de section exact (ex: "14", "14.03", "14.03.02")
+      // Un acte hérite des notes de TOUS ses niveaux parents (via cols 42,44,46,48)
+      const sectionNotes = {};    // { "14": ["L'arthrodèse inclut...", ...], ... }
+      let currentSectionCode = '';// code de la section T en cours
+
+      const actsToUpload = [];
+      let currentAct = null;
+
+      for (let i = 1; i < compRows.length; i++) {
+        const row  = compRows[i];
+        const typo = String(row[10] || '').trim();
+        const text = String(row[5]  || '').trim();
+
+        if (!typo) continue; // LV (lignes vides de mise en forme)
+
+        if (typo === 'T') {
+          // Nouveau nœud d'arborescence — mémoriser son code (col[0])
+          currentSectionCode = String(row[0] || '').trim();
+          if (currentSectionCode && !sectionNotes[currentSectionCode]) {
+            sectionNotes[currentSectionCode] = [];
+          }
         }
-        showToast(`${valid.length} actes importés. Le moteur de recherche est prêt.`, 'success', 5000);
-      } catch(e) { console.error(e); showToast("Erreur de connexion Firebase pendant l'import.", 'error'); }
-      setIsUploading(false); setUploadProgress(0);
-    }});
+
+        else if (typo === 'NT' && currentSectionCode) {
+          // Note de titre → appartient à la section courante
+          if (text) sectionNotes[currentSectionCode].push(text);
+        }
+
+        else if (typo === 'L') {
+          // Acte facturable → sauvegarder l'acte précédent
+          if (currentAct) actsToUpload.push(currentAct);
+
+          const code    = String(row[2]  || '').trim(); // col 2 = code 7 chars
+          const actId   = String(row[11] || '1').trim(); // col 11 = activité
+          const phaId   = String(row[12] || '0').trim(); // col 12 = phase
+
+          // Tarifs depuis V82
+          const tarif = tarifsMap.get(`${code}_A${actId}_P${phaId}`) || { s1: 0, s2: 0 };
+
+          // Fil d'Ariane (cols 42-49, pré-calculés par l'ATIH dans fichier_complementaire)
+          const chapNum   = String(row[42] || '').trim();
+          const chapTitre = String(row[43] || '').trim();
+          const scNum     = String(row[44] || '').trim();
+          const scTitre   = String(row[45] || '').trim();
+          const parNum    = String(row[46] || '').trim();
+          const parTitre  = String(row[47] || '').trim();
+          const spNum     = String(row[48] || '').trim();
+          const spTitre   = String(row[49] || '').trim();
+
+          // Notes héritées — concaténation des notes de TOUS les niveaux parents
+          // Ex: acte dans 14.03.02.07 hérite de : notes["14"] + notes["14.03"] + notes["14.03.02"] + notes["14.03.02.07"]
+          const notesSection = [
+            ...(sectionNotes[chapNum] || []),
+            ...(sectionNotes[scNum]   || []),
+            ...(sectionNotes[parNum]  || []),
+            ...(sectionNotes[spNum]   || []),
+          ].filter(Boolean);
+
+          // Index de recherche
+          const libelleNorm = normalizeText(text);
+          const words = libelleNorm.split(/[^A-Z0-9]+/).filter(w=>w.length>=2);
+          const mc = new Set();
+          words.forEach(w=>{ mc.add(w); for(let l=2;l<w.length;l++) mc.add(w.substring(0,l)); });
+          // Alias médicaux
+          if (words.includes("CALCANEUS"))  mc.add("CALCANEUM");
+          if (words.includes("CALCANEUM"))  mc.add("CALCANEUS");
+          if (words.includes("ASTRAGALE"))  mc.add("TALUS");
+          if (words.includes("TALUS"))      mc.add("ASTRAGALE");
+          if (words.includes("ROTULE"))     mc.add("PATELLA");
+          if (words.includes("PATELLA"))    mc.add("ROTULE");
+          if (words.includes("SCAPULA"))    mc.add("OMOPLATE");
+          if (words.includes("OMOPLATE"))   mc.add("SCAPULA");
+
+          currentAct = {
+            id: `${code}_A${actId}_P${phaId}`,
+            code,
+            libelle:       text,
+            activite:      actId,
+            phase:         phaId,
+            tarifSecteur1: tarif.s1,
+            tarifSecteur2: tarif.s2,
+            motsCles:      Array.from(mc),
+            libelleSearch: libelleNorm,
+            // Fil d'Ariane
+            chapitreNum:        chapNum,
+            chapitreTitre:      chapTitre,
+            sousChapNum:        scNum,
+            sousChapTitre:      scTitre,
+            paragrapheNum:      parNum,
+            paragrapheTitre:    parTitre,
+            sousParagrapheNum:  spNum,
+            sousParagrapheTitre:spTitre,
+            // Notes
+            notesSection, // héritées des parents
+            notesActe: [], // spécifiques à cet acte (lignes N qui suivent)
+          };
+        }
+
+        else if (typo === 'N' && currentAct) {
+          // Note spécifique à l'acte courant
+          if (text) currentAct.notesActe.push(text);
+        }
+      }
+      // Ne pas oublier le dernier acte
+      if (currentAct) actsToUpload.push(currentAct);
+
+      showToast(`${actsToUpload.length} actes enrichis. Envoi vers Firestore...`, 'info', 3000);
+      setUploadProgress(40);
+
+      // ── ÉTAPE 3 : Envoi Firestore par batch de 200 ────────────────────
+      setUploadStep("Envoi vers Firestore...");
+      const CHUNK = 200; // 200 docs/batch (documents enrichis = plus lourds)
+      for (let i = 0; i < actsToUpload.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        actsToUpload.slice(i, i + CHUNK).forEach(a => {
+          const { id, ...data } = a;
+          batch.set(doc(db, ACTES_COLLECTION, id), data);
+        });
+        await batch.commit();
+        setUploadProgress(40 + Math.round((i / actsToUpload.length) * 58));
+        await delay(80);
+      }
+
+      setUploadProgress(100);
+      showToast(
+        `✅ Import terminé — ${actsToUpload.length} actes avec arborescence et notes complètes.`,
+        'success', 6000
+      );
+
+    } catch (e) {
+      console.error("Erreur import CCAM :", e);
+      showToast(`Erreur : ${e.message || "Import échoué. Vérifiez la console."}`, 'error', 6000);
+    }
+
+    setIsUploading(false);
+    setUploadProgress(0);
+    setUploadStep('');
+  };
+
+  const handleDeleteAccount = async() => {
+    const ok=await showConfirm("Supprimer définitivement votre compte et toutes vos données ? Cette action est irréversible.", { danger:true, title:'Suppression du compte', confirmLabel:'Supprimer mon compte' });
+    if (ok) {
+      try {
+        await deleteDoc(doc(db,"users",auth.currentUser.uid));
+        await signOut(auth);
+      } catch { showToast("Veuillez vous reconnecter avant de supprimer votre compte.", 'warning'); }
+    }
   };
 
   const handleGoogleLogin = async() => {
@@ -674,14 +863,9 @@ function App() {
       const res = await signInWithPopup(auth, new GoogleAuthProvider()), cu = res.user;
       const s = await getDoc(doc(db,"users",cu.uid));
       if (!s.exists()) {
-        let defaultPrenom = ""; let defaultNom = "";
-        if (cu.displayName) {
-          const p = cu.displayName.split(' ');
-          defaultPrenom = p[0] || "";
-          defaultNom = p.slice(1).join(' ').toUpperCase() || "";
-        } else if (cu.email) {
-          defaultPrenom = cu.email.split('@')[0];
-        }
+        let defaultPrenom = "", defaultNom = "";
+        if (cu.displayName) { const p = cu.displayName.split(' '); defaultPrenom = p[0]||""; defaultNom = p.slice(1).join(' ').toUpperCase()||""; }
+        else if (cu.email) { defaultPrenom = cu.email.split('@')[0]; }
         await setDoc(doc(db,"users",cu.uid),{nom:defaultNom,prenom:defaultPrenom,email:cu.email,rpps:'',telephone:'',specialite:'1',secteur:'2',optam:false,adresse:{numero:'',rue:'',codePostal:'',ville:''},dateCreation:new Date(),lastLogin:new Date(),usageCount:0});
       } else { await updateDoc(doc(db,"users",cu.uid),{lastLogin:new Date()}); }
       setError('');
@@ -701,9 +885,9 @@ function App() {
       const r = await createUserWithEmailAndPassword(auth,email,password);
       await setDoc(doc(db,"users",r.user.uid),{nom:nom.toUpperCase(),prenom,email,rpps,telephone,specialite,secteur:'2',optam:false,adresse:{numero:numeroRue,rue:nomRue,codePostal,ville},dateCreation:new Date(),lastLogin:new Date(),usageCount:0});
       setIsRegistering(false); setError('');
-    } catch (err) { 
-      if (err.code === 'auth/email-already-in-use') setError("Cette adresse email est déjà utilisée.");
-      else if (err.code === 'auth/weak-password') setError("Le mot de passe doit faire au moins 6 caractères.");
+    } catch (err) {
+      if (err.code==='auth/email-already-in-use') setError("Cette adresse email est déjà utilisée.");
+      else if (err.code==='auth/weak-password') setError("Le mot de passe doit faire au moins 6 caractères.");
       else setError("Erreur lors de l'inscription : " + err.message);
     }
   };
@@ -713,30 +897,6 @@ function App() {
     if (!email) { setError("Veuillez renseigner votre email."); return; }
     try { await sendPasswordResetEmail(auth,email); setResetMessage("Lien envoyé ! Vérifiez vos emails."); setError(''); }
     catch { setError("Impossible d'envoyer l'email. Vérifiez l'adresse."); }
-  };
-
-  const updateProfile = async(e) => {
-    e.preventDefault();
-    try {
-      await updateDoc(doc(db,"users",user.uid),{nom:nom.toUpperCase(),prenom,telephone,rpps,specialite,secteur,optam,adresse:{numero:numeroRue,rue:nomRue,codePostal,ville}});
-      showToast("Profil mis à jour avec succès !", 'success');
-    } catch { showToast("Erreur lors de la sauvegarde du profil.", 'error'); }
-  };
-
-  const handleDeleteAccount = async() => {
-    const ok=await showConfirm("Supprimer définitivement votre compte et toutes vos données ? Cette action est irréversible.", { danger:true, title:'Suppression du compte', confirmLabel:'Supprimer mon compte' });
-    if (ok) {
-      try {
-        // On supprime uniquement le doc Firestore.
-        // La Cloud Function "purgeCompteUtilisateur" prend le relai
-        // et efface automatiquement le compte Firebase Auth.
-        await deleteDoc(doc(db,"users",auth.currentUser.uid));
-        // Déconnexion immédiate côté client (l'app revient à la page login)
-        await signOut(auth);
-      } catch {
-        showToast("Veuillez vous reconnecter avant de supprimer votre compte.", 'warning');
-      }
-    }
   };
 
   const allCategories     = ['Tous',...new Set(templates.map(t=>t.category||'Non classé'))];
@@ -751,7 +911,6 @@ function App() {
       <p>Développé par Dr Raphaël Jameson</p>
     </div>
   );
-
   const liveIndicator = (
     <span title="Synchronisation temps réel" style={{display:'inline-block',width:'7px',height:'7px',borderRadius:'50%',background:'var(--emerald-500)',marginLeft:'10px',verticalAlign:'middle',boxShadow:'0 0 0 2px rgba(16,185,129,0.3)'}} />
   );
@@ -826,18 +985,16 @@ function App() {
               <input type="email" placeholder="Email *" value={email} onChange={e=>setEmail(e.target.value)} autoComplete="username" required style={{marginBottom:'12px'}} />
               <input type="password" placeholder="Mot de passe * (min. 6 caractères)" value={password} onChange={e=>setPassword(e.target.value)} autoComplete="new-password" required style={{marginBottom:'12px'}} />
               <input type="text" placeholder="N° RPPS (Optionnel)" value={rpps} onChange={e=>setRpps(e.target.value)} style={{marginBottom:'12px'}} />
-              
-              <div style={{display:'flex', flexDirection:'column', gap:'8px', marginBottom:'16px'}}>
+              <div style={{display:'flex',flexDirection:'column',gap:'8px',marginBottom:'16px'}}>
                 <label className="consent-label">
-                  <input type="checkbox" checked={proChecked} onChange={e=>setProChecked(e.target.checked)} required /> 
+                  <input type="checkbox" checked={proChecked} onChange={e=>setProChecked(e.target.checked)} required />
                   Je certifie être un professionnel de santé (ou assistant(e)). *
                 </label>
                 <label className="consent-label">
-                  <input type="checkbox" checked={consentChecked} onChange={e=>setConsentChecked(e.target.checked)} required /> 
+                  <input type="checkbox" checked={consentChecked} onChange={e=>setConsentChecked(e.target.checked)} required />
                   J'accepte que mes données soient traitées conformément au RGPD. *
                 </label>
               </div>
-
               <button type="submit" className="btn btn--success" style={{width:'100%',padding:'12px'}}>Créer mon compte</button>
               <div className="auth-divider">ou</div>
               <button type="button" className="btn-google" onClick={handleGoogleLogin}><img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" style={{width:'18px'}} /> Continuer avec Google</button>
@@ -867,7 +1024,6 @@ function App() {
   // ══════════════════════════════════════════════════════════════════════════
   return (
     <div className="app-body">
-      {/* Systèmes globaux */}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
       <ConfirmModal state={confirmState} onConfirm={handleConfirm} onCancel={handleCancel} />
       {renderShareModal()}
@@ -876,6 +1032,7 @@ function App() {
       <nav className="app-navbar">
         <div className="app-navbar__logo">Optim'<span>CCAM</span></div>
         <div className="responsive-navbar-buttons">
+          <button className={`nav-btn${activeTab==='browser'?' nav-btn--active':''}`} onClick={()=>setActiveTab('browser')}>Navigateur</button>
           <button className={`nav-btn${activeTab==='simulator'?' nav-btn--active':''}`} onClick={()=>setActiveTab('simulator')}>Simulateur</button>
           <button className={`nav-btn${activeTab==='favorites'?' nav-btn--active':''}`} onClick={()=>setActiveTab('favorites')}>Favoris {isLoadingTemplates&&<span style={{fontSize:'10px',opacity:0.6}}>⏳</span>}</button>
           <button className={`nav-btn${activeTab==='profile'?' nav-btn--active':''}`} onClick={()=>setActiveTab('profile')}>Profil</button>
@@ -886,12 +1043,128 @@ function App() {
 
       <div className="app-container">
 
+        {/* ── NAVIGATEUR CCAM ───────────────────────────────────────────── */}
+        {activeTab==='browser'&&(
+          <div className="card">
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'20px',flexWrap:'wrap',gap:'10px'}}>
+              <div className="card__title" style={{margin:0}}>Navigateur CCAM</div>
+              <div style={{background:'var(--slate-100)',padding:'4px',borderRadius:'8px',display:'flex',gap:'4px'}}>
+                <button
+                  style={{padding:'6px 12px',borderRadius:'6px',border:'none',cursor:'pointer',fontSize:'13px',fontWeight:'500',background:browserView==='search'?'#fff':'transparent',color:browserView==='search'?'var(--navy-800)':'var(--slate-500)',boxShadow:browserView==='search'?'var(--shadow-sm)':'none'}}
+                  onClick={()=>{setBrowserView('search');setSelectedBrowserAct(null);}}>🔍 Recherche</button>
+                <button
+                  style={{padding:'6px 12px',borderRadius:'6px',border:'none',cursor:'pointer',fontSize:'13px',fontWeight:'500',background:browserView==='favorites'?'#fff':'transparent',color:browserView==='favorites'?'var(--navy-800)':'var(--slate-500)',boxShadow:browserView==='favorites'?'var(--shadow-sm)':'none'}}
+                  onClick={()=>{setBrowserView('favorites');setSelectedBrowserAct(null);}}>⭐ Mes Favoris ({favoriteActs.length})</button>
+              </div>
+            </div>
+
+            {selectedBrowserAct ? (
+              // ── FICHE DÉTAILLÉE D'UN ACTE ────────────────────────────
+              <div style={{border:'1px solid var(--color-border)',borderRadius:'var(--radius-md)',padding:'20px',display:'flex',flexDirection:'column',gap:'16px',background:'var(--slate-50)',boxShadow:'var(--shadow-sm)'}}>
+
+                {/* En-tête : code + tarif + bouton fermer */}
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                  <div style={{display:'flex',gap:'12px',alignItems:'center'}}>
+                    <span className="code-badge" style={{fontSize:'16px',padding:'6px 10px',background:'var(--sky-100)',color:'var(--navy-800)'}}>{selectedBrowserAct.code}</span>
+                    <strong style={{color:'var(--sky-500)',fontSize:'18px'}}>
+                      {(secteur==='1'||optam)?selectedBrowserAct.tarifSecteur1:selectedBrowserAct.tarifSecteur2} €
+                    </strong>
+                  </div>
+                  <button className="btn-icon" onClick={()=>setSelectedBrowserAct(null)} title="Fermer">✕</button>
+                </div>
+
+                {/* Fil d'Ariane */}
+                {selectedBrowserAct.chapitreTitre && (
+                  <div style={{fontSize:'11px',color:'var(--color-text-muted)',lineHeight:'1.6'}}>
+                    <span style={{fontWeight:'600',textTransform:'uppercase',letterSpacing:'0.4px'}}>
+                      {selectedBrowserAct.chapitreTitre}
+                      {selectedBrowserAct.sousChapTitre && <span> › {selectedBrowserAct.sousChapTitre}</span>}
+                      {selectedBrowserAct.paragrapheTitre && <span> › {selectedBrowserAct.paragrapheTitre}</span>}
+                      {selectedBrowserAct.sousParagrapheTitre && <span> › {selectedBrowserAct.sousParagrapheTitre}</span>}
+                    </span>
+                  </div>
+                )}
+
+                {/* Libellé complet */}
+                <div style={{fontSize:'14px',fontWeight:'600',color:'var(--color-text-primary)',lineHeight:'1.6',background:'#fff',padding:'16px',borderRadius:'8px',border:'1px solid var(--color-border-soft)'}}>
+                  {selectedBrowserAct.libelle}
+                </div>
+
+                {/* Notes spécifiques à l'acte */}
+                {selectedBrowserAct.notesActe && selectedBrowserAct.notesActe.length>0 && (
+                  <div style={{background:'var(--sky-50)',border:'1px solid var(--sky-400)',padding:'14px',borderRadius:'8px'}}>
+                    <div style={{fontSize:'11px',fontWeight:'700',color:'var(--sky-500)',textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>ℹ Notes de l'acte</div>
+                    {selectedBrowserAct.notesActe.map((n,i)=>
+                      <p key={i} style={{fontSize:'13px',color:'var(--navy-700)',margin:'4px 0',lineHeight:'1.55',whiteSpace:'pre-wrap'}}>{n}</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Règles héritées du chapitre */}
+                {selectedBrowserAct.notesSection && selectedBrowserAct.notesSection.length>0 && (
+                  <div style={{background:'var(--rose-50)',border:'1px solid var(--rose-200)',padding:'14px',borderRadius:'8px'}}>
+                    <div style={{fontSize:'11px',fontWeight:'700',color:'var(--rose-500)',textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>⚠️ Règles de codage du chapitre</div>
+                    {selectedBrowserAct.notesSection.map((n,i)=>
+                      <p key={i} style={{fontSize:'12px',color:'var(--rose-600)',margin:'6px 0',lineHeight:'1.55',whiteSpace:'pre-wrap',borderBottom:'1px dashed var(--rose-100)',paddingBottom:'4px'}}>{n}</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div style={{display:'flex',gap:'10px',marginTop:'4px'}}>
+                  <button className="btn btn--primary" style={{flex:1}} onClick={()=>addActToSimulatorFromBrowser(selectedBrowserAct)}>
+                    ➕ Ajouter au Simulateur
+                  </button>
+                  {favoriteActs.some(a=>a.code===selectedBrowserAct.code) ? (
+                    <button className="btn btn--slate" style={{flex:1}} onClick={()=>toggleFavoriteAct(selectedBrowserAct)}>★ Retirer des favoris</button>
+                  ) : (
+                    <button className="btn btn--warning" style={{flex:1}} onClick={()=>toggleFavoriteAct(selectedBrowserAct)}>☆ Ajouter aux favoris</button>
+                  )}
+                </div>
+              </div>
+
+            ) : browserView==='search' ? (
+              <>
+                <div style={{marginBottom:'20px'}}>
+                  <SearchAutocomplete specialite={specialite} userSecteur={secteur} isOptam={optam} onSelect={act=>setSelectedBrowserAct(act)} maxActs={999} maxResults={50} placeholder="Rechercher un acte (ex: NEKA010) ou mots-clés (ex: PROTHESE)..." />
+                </div>
+                <div style={{textAlign:'center',padding:'40px',color:'var(--color-text-muted)',fontSize:'13px'}}>
+                  Utilisez la barre de recherche pour explorer la nomenclature CCAM complète avec notes et règles de codage.
+                </div>
+              </>
+            ) : (
+              <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+                {favoriteActs.length===0 ? (
+                  <div style={{textAlign:'center',padding:'40px',color:'var(--color-text-muted)',fontSize:'13px'}}>
+                    Vous n'avez pas encore de codes favoris. Cherchez un acte et cliquez sur l'étoile pour l'ajouter ici.
+                  </div>
+                ) : (
+                  favoriteActs.map(act=>{
+                    const displayTarif=(secteur==='1'||optam)?act.tarifSecteur1:act.tarifSecteur2;
+                    return (
+                      <div key={act.code} onClick={()=>setSelectedBrowserAct(act)}
+                        style={{display:'flex',alignItems:'center',gap:'12px',padding:'12px 16px',background:'#fff',border:'1px solid var(--color-border)',borderRadius:'var(--radius-md)',cursor:'pointer',transition:'all var(--duration-fast)'}}
+                        onMouseEnter={e=>e.currentTarget.style.borderColor='var(--sky-500)'}
+                        onMouseLeave={e=>e.currentTarget.style.borderColor='var(--color-border)'}>
+                        <span style={{color:'var(--amber-500)',fontSize:'18px'}}>★</span>
+                        <span className="code-badge">{act.code}</span>
+                        <span style={{flex:1,fontSize:'13px',color:'var(--color-text-secondary)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{act.libelle}</span>
+                        <strong style={{color:'var(--color-text-primary)'}}>{displayTarif} €</strong>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ── PROFIL ────────────────────────────────────────────────────── */}
         {activeTab==='profile'&&(
           <div>
             <div className="card">
               <div className="card__title">Mon profil professionnel</div>
-              <form onSubmit={updateProfile}>
+              <form onSubmit={e=>e.preventDefault()}>
                 <div className="responsive-grid-profile">
                   <div><label>Nom</label><input type="text" value={nom} onChange={e=>setNom(e.target.value)} style={{marginBottom:'12px'}} /></div>
                   <div><label>Prénom</label><input type="text" value={prenom} onChange={e=>setPrenom(e.target.value)} style={{marginBottom:'12px'}} /></div>
@@ -899,8 +1172,6 @@ function App() {
                   <div><label>RPPS</label><input type="text" value={rpps} onChange={e=>setRpps(e.target.value)} style={{marginBottom:'12px'}} /></div>
                   <div><label>Téléphone</label><input type="tel" value={telephone} onChange={e=>setTelephone(e.target.value)} style={{marginBottom:'12px'}} /></div>
                 </div>
-
-                {/* Adresse du cabinet — modifiable à tout moment */}
                 <div style={{marginTop:'4px',borderTop:'1px solid var(--color-border-soft)',paddingTop:'14px',marginBottom:'4px'}}>
                   <div className="card__label" style={{marginBottom:'12px'}}>Adresse du cabinet</div>
                   <div className="responsive-grid-profile">
@@ -937,7 +1208,11 @@ function App() {
                     </div>
                   </div>
                 </div>
-                <button type="submit" className="btn btn--primary" style={{width:'100%',padding:'12px',marginTop:'24px'}}>Enregistrer mon profil</button>
+                <div style={{display:'flex',justifyContent:'center',alignItems:'center',marginTop:'24px',padding:'12px',background:'var(--sky-50)',borderRadius:'8px'}}>
+                  <span style={{fontSize:'13px',color:saveStatus.includes('✓')?'var(--emerald-600)':'var(--navy-600)',fontWeight:'600'}}>
+                    {saveStatus || 'Vos modifications sont sauvegardées automatiquement.'}
+                  </span>
+                </div>
               </form>
             </div>
             <div className="card card--danger" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'12px'}}>
@@ -1035,7 +1310,6 @@ function App() {
                 <SearchAutocomplete specialite={specialite} userSecteur={secteur} isOptam={optam} onSelect={addAct} maxActs={3-selectedActs.length} placeholder="Tapez un code (ex: NEKA010) ou un mot-clé (ex: PROTHESE)..." />
                 {selectedActs.length>=3&&<p style={{fontSize:'12px',color:'var(--color-text-muted)',marginTop:'8px',textAlign:'center'}}>Maximum 3 actes atteint.</p>}
               </div>
-
               {selectedActs.length>0&&(
                 <div className="card">
                   <div className="metrics-row">
@@ -1056,7 +1330,6 @@ function App() {
                 </div>
               )}
             </div>
-
             <div>
               <div className="sidebar-card">
                 <div className="sidebar-card__title">Favoris rapides {liveIndicator}</div>
@@ -1099,10 +1372,9 @@ function App() {
                 <tbody>
                   {usersList.map(u=>(
                     <tr key={u.id}>
-                      {/* NOUVEAU : Affichage de l'email sous le nom */}
                       <td>
                         <strong>{u.nom} {u.prenom}</strong><br/>
-                        <span style={{fontSize:'12px', color:'var(--sky-500)', display:'inline-block', marginBottom:'2px'}}>{u.email}</span><br/>
+                        <span style={{fontSize:'12px',color:'var(--sky-500)',display:'inline-block',marginBottom:'2px'}}>{u.email}</span><br/>
                         <span className="text-muted text-xs">RPPS : {u.rpps}</span>
                       </td>
                       <td><span style={{color:'var(--emerald-600)',fontWeight:'500',fontSize:'12px'}}>{u.lastLogin?.seconds?new Date(u.lastLogin.seconds*1000).toLocaleString():'Jamais'}</span></td>
@@ -1118,19 +1390,68 @@ function App() {
                 </tbody>
               </table>
             </div>
+
+            {/* ─── IMPORT CCAM V6 ─────────────────────────────────────── */}
             <div className="maintenance-box">
-              <div className="card__label" style={{marginBottom:'12px'}}>
-                Maintenance CCAM
-                <span style={{fontSize:'11px',color:'var(--amber-500)',fontWeight:'400',marginLeft:'10px'}}>⚠️ Ré-importer le CSV après chaque mise à jour du code</span>
+              <div className="card__label" style={{marginBottom:'16px'}}>
+                Import CCAM V6 — Fusion intelligente
               </div>
-              <div style={{display:'flex',gap:'10px',flexWrap:'wrap',alignItems:'center'}}>
-                <input type="file" accept=".csv" onChange={handleFileUpload} style={{flex:1,minWidth:'200px'}} />
-                <button className="btn btn--danger" style={{border:'1px solid var(--rose-500)',background:'transparent',color:'var(--rose-500)'}} onClick={handleClearDatabase}>Nettoyer</button>
+
+              {/* Sélection des 3 fichiers ATIH en une seule fois */}
+              <div style={{marginBottom:'16px',padding:'16px',background:'#f0f9ff',borderRadius:'8px',border:'1px solid var(--sky-400)'}}>
+                <div style={{fontSize:'12px',fontWeight:'700',color:'var(--navy-600)',marginBottom:'6px'}}>
+                  📂 Sélectionnez les 2 ou 3 fichiers ATIH simultanément
+                </div>
+                <div style={{fontSize:'11px',color:'var(--color-text-muted)',marginBottom:'10px',lineHeight:'1.6'}}>
+                  • <strong>CCAM_V82_...</strong> (XLS) — tarifs Secteur 1/2 — CNAM<br/>
+                  • <strong>fichier_complementaire_ccam_...</strong> (XLSX) — arborescence + notes — ATIH<br/>
+                  • <em>liste_analytique_ccam_... (XLSX) — optionnel, ignoré automatiquement</em>
+                </div>
+                <input
+                  type="file"
+                  multiple
+                  accept=".xls,.xlsx,.csv"
+                  onChange={e => setImportFiles(Array.from(e.target.files))}
+                  style={{width:'100%'}}
+                />
+                {importFiles.length > 0 && (
+                  <div style={{marginTop:'8px',display:'flex',flexDirection:'column',gap:'3px'}}>
+                    {importFiles.map((f,i) => (
+                      <div key={i} style={{fontSize:'12px',color:'var(--emerald-600)',fontWeight:'500'}}>
+                        ✓ {f.name} ({(f.size/1024/1024).toFixed(1)} MB)
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-              {isUploading&&(
-                <div style={{marginTop:'12px'}}>
-                  <div className="progress-bar"><div className="progress-bar__fill" style={{width:`${uploadProgress}%`}} /></div>
-                  <p className="progress-bar__label">Progression : {uploadProgress}% — Ne fermez pas cette page</p>
+
+              {/* Boutons d'action */}
+              <div style={{display:'flex',gap:'10px',flexWrap:'wrap'}}>
+                <button
+                  className="btn btn--primary"
+                  style={{flex:2}}
+                  onClick={handleImportCCAM}
+                  disabled={isUploading || importFiles.length < 2}
+                >
+                  {isUploading ? `⏳ ${uploadStep}` : '🚀 Lancer la fusion'}
+                </button>
+                <button
+                  className="btn btn--danger"
+                  style={{flex:1,border:'1px solid var(--rose-500)',background:'transparent',color:'var(--rose-500)'}}
+                  onClick={handleClearDatabase}
+                  disabled={isUploading}
+                >
+                  Vider la base
+                </button>
+              </div>
+
+              {/* Barre de progression */}
+              {isUploading && (
+                <div style={{marginTop:'16px'}}>
+                  <div className="progress-bar">
+                    <div className="progress-bar__fill" style={{width:`${uploadProgress}%`,transition:'width 0.3s'}} />
+                  </div>
+                  <p className="progress-bar__label">{uploadStep} — {uploadProgress}% — Ne fermez pas cette page</p>
                 </div>
               )}
             </div>
