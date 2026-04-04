@@ -540,7 +540,7 @@ function App() {
     if (selectedActs.length >= 3) { showToast("Le simulateur est plein (3 actes maximum).", "warning"); setActiveTab('simulator'); return; }
     setSelectedActs(p => [...p, { ...act, activeModifiers: { J: true } }]);
     setActiveTab('simulator');
-    showToast(`Acte ${act.code} envoyé au simulateur.`, 'success');
+    showToast(`Acte ${act.code} envoyé dans OptiSim.`, 'success');
   };
 
   const saveFavChanges = async() => {
@@ -564,7 +564,7 @@ function App() {
     if (t.feeValue > 0) { setFeeType(t.feeType || 'amount'); setFeeValue(t.feeValue); }
     else                { setFeeType('amount'); setFeeValue(0); }
     setActiveTab('simulator');
-    showToast(`"${t.name}" chargé dans le simulateur.`, 'info', 2500);
+    showToast(`"${t.name}" chargé dans OptiSim.`, 'info', 2500);
   };
 
   const addActToFav = (act) => { if (favActsInput.length>=3) return; setFavActsInput(p=>[...p,{...act,activeModifiers:{J:true}}]); };
@@ -1032,8 +1032,8 @@ function App() {
       <nav className="app-navbar">
         <div className="app-navbar__logo">Optim'<span>CCAM</span></div>
         <div className="responsive-navbar-buttons">
-          <button className={`nav-btn${activeTab==='browser'?' nav-btn--active':''}`} onClick={()=>setActiveTab('browser')}>Navigateur</button>
-          <button className={`nav-btn${activeTab==='simulator'?' nav-btn--active':''}`} onClick={()=>setActiveTab('simulator')}>Simulateur</button>
+          <button className={`nav-btn${activeTab==='browser'?' nav-btn--active':''}`} onClick={()=>setActiveTab('browser')}>OptiNav</button>
+          <button className={`nav-btn${activeTab==='simulator'?' nav-btn--active':''}`} onClick={()=>setActiveTab('simulator')}>OptiSim</button>
           <button className={`nav-btn${activeTab==='favorites'?' nav-btn--active':''}`} onClick={()=>setActiveTab('favorites')}>Favoris {isLoadingTemplates&&<span style={{fontSize:'10px',opacity:0.6}}>⏳</span>}</button>
           <button className={`nav-btn${activeTab==='profile'?' nav-btn--active':''}`} onClick={()=>setActiveTab('profile')}>Profil</button>
           {auth.currentUser?.email===ADMIN_EMAIL&&<button className={`nav-btn${activeTab==='dashboard'?' nav-btn--active':''}`} onClick={()=>setActiveTab('dashboard')}>Admin</button>}
@@ -1043,11 +1043,11 @@ function App() {
 
       <div className="app-container">
 
-        {/* ── NAVIGATEUR CCAM ───────────────────────────────────────────── */}
+        {/* ── OPTINAV CCAM ───────────────────────────────────────────── */}
         {activeTab==='browser'&&(
           <div className="card">
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'20px',flexWrap:'wrap',gap:'10px'}}>
-              <div className="card__title" style={{margin:0}}>Navigateur CCAM</div>
+              <div className="card__title" style={{margin:0}}>OptiNav CCAM</div>
               <div style={{background:'var(--slate-100)',padding:'4px',borderRadius:'8px',display:'flex',gap:'4px'}}>
                 <button
                   style={{padding:'6px 12px',borderRadius:'6px',border:'none',cursor:'pointer',fontSize:'13px',fontWeight:'500',background:browserView==='search'?'#fff':'transparent',color:browserView==='search'?'var(--navy-800)':'var(--slate-500)',boxShadow:browserView==='search'?'var(--shadow-sm)':'none'}}
@@ -1113,7 +1113,7 @@ function App() {
                 {/* Actions */}
                 <div style={{display:'flex',gap:'10px',marginTop:'4px'}}>
                   <button className="btn btn--primary" style={{flex:1}} onClick={()=>addActToSimulatorFromBrowser(selectedBrowserAct)}>
-                    ➕ Ajouter au Simulateur
+                    ➕ Ajouter dans OptiSim
                   </button>
                   {favoriteActs.some(a=>a.code===selectedBrowserAct.code) ? (
                     <button className="btn btn--slate" style={{flex:1}} onClick={()=>toggleFavoriteAct(selectedBrowserAct)}>★ Retirer des favoris</button>
@@ -1301,7 +1301,7 @@ function App() {
           </div>
         )}
 
-        {/* ── SIMULATEUR ────────────────────────────────────────────────── */}
+        {/* ── OPTISIM ────────────────────────────────────────────────── */}
         {activeTab==='simulator'&&(
           <div className="responsive-grid-sim">
             <div>
