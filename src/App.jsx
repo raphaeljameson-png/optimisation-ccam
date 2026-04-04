@@ -1,11 +1,6 @@
-// src/App.jsx — Optim'CCAM v6.4 — Version corrigée (Authentification Blindée)
-// Collection test : actes_ccam_v82
-// Corrections appliquées :
-//   1. email.trim() sur toutes les requêtes Auth (anti-espace invisible)
-//   2. Découplage de signInWithEmailAndPassword et updateDoc (anti-crash login)
-//   3. Messages d'erreurs et de succès Auth avec styles en ligne explicites
-//   4. favoriteActs dans updateDoc auto-save
-//   5. INCOMPATIBLE_PAIRS + checkIncompatibility (LFFA002 + LHFA016 etc.)
+// src/App.jsx — Optim'CCAM v6.5 — Version Blindée et Définitive
+// Import intelligent MULTI-FEUILLES : CCAM V82 + Complémentaire
+// Profil anti-crash, Auth corrigée, Recherche 3 lettres dynamique
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
@@ -21,10 +16,10 @@ import {
   addDoc, orderBy, limit, startAt, endAt, increment, onSnapshot
 } from 'firebase/firestore';
 import { QRCodeCanvas } from 'qrcode.react';
-import * as XLSX from 'xlsx';
+import * as XLSX from 'xlsx'; // npm install xlsx
 
 // ─── CONSTANTES ──────────────────────────────────────────────────────────────
-const ACTES_COLLECTION = "actes_ccam_v82";
+const ACTES_COLLECTION = "actes_ccam_v82"; 
 const LOGO_URL    = "https://www.institutorthopedique.paris/wp-content/uploads/2025/07/CROPinstitut-orthopedique-paris-logo-grand.png";
 const ADMIN_EMAIL = "dr.jameson@rachis.paris";
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
@@ -63,60 +58,68 @@ const computeActs = (acts, userSecteur, isOptam, userSpecialite) =>
     if (userSpecialite==='2' && act.activite==='1') baseTarif *= 0.25;
     else if (userSpecialite==='1' && act.activite==='2') baseTarif *= 4;
     return { ...act, baseMajore: baseTarif * majo };
-  }).sort((a,b) => b.baseMajore - a.baseMajore)
-    .map((act,i) => ({ ...act, coeff: i===0?1:0.5, baseRetenue: act.baseMajore*(i===0?1:0.5) }));
+  }).sort((a,b) => b.baseMajore - a.baseMajore).map((act,i) => ({ ...act, coeff: i===0?1:0.5, baseRetenue: act.baseMajore*(i===0?1:0.5) }));
 
 const computeTotal = (c) => c.reduce((s,a) => s+a.baseRetenue, 0);
 const computeDep   = (ft, fv, base) => ft==='amount' ? (parseFloat(fv)||0) : base*((parseFloat(fv)||0)/100);
 
-// ─── RECHERCHE CCAM ───────────────────────────────────────────────────────────
+// ─── RECHERCHE CCAM CORRIGÉE ──────────────────────────────────────────────────
 const searchCCAM = async (term, specialite, maxResults=20) => {
   if (!term || term.trim().length < 3) return [];
   const nt = normalizeText(term);
-
+  
+  // 1. Recherche par code exact
   if (/^[A-Z]{4}\d{3}$/.test(nt)) {
-    try {
-      const s = await getDocs(query(collection(db, ACTES_COLLECTION), where("code", "==", nt)));
+    try { 
+      const s = await getDocs(query(collection(db, ACTES_COLLECTION), where("code", "==", nt))); 
       let docs = s.docs.map(d => ({ id: d.id, ...d.data() }));
-      const preferred = docs.filter(d => d.activite === specialite);
-      return preferred.length > 0 ? preferred : docs;
+      if (docs.length > 1) {
+        const preferred = docs.filter(d => d.activite === specialite);
+        if (preferred.length > 0) docs = preferred;
+      }
+      return docs;
     } catch { return []; }
   }
 
   const seen = new Map();
   const queries = [];
-
+  
+  // 2. Recherche par début de code
   if (/^[A-Z]{1,4}\d{0,3}$/.test(nt)) {
     queries.push(getDocs(query(collection(db, ACTES_COLLECTION), orderBy("code"), startAt(nt), endAt(nt+'\uf8ff'), limit(100))));
   }
-
+  
+  // 3. Recherche par mots-clés
   const words = nt.split(/[^A-Z0-9]+/).filter(w=>w.length>=2);
   if (words.length > 0) {
     const best = words.reduce((a,b)=>a.length>=b.length?a:b);
     queries.push(getDocs(query(collection(db, ACTES_COLLECTION), where("motsCles", "array-contains", best), limit(200))));
   }
-
+  
   try {
     const snaps = await Promise.all(queries);
     snaps.forEach(s => s.docs.forEach(d => {
       const data = d.data();
+      // Filtrage par spécialité en local pour éviter les bugs Firebase
       if (data.activite === specialite && !seen.has(d.id)) {
         let match = true;
         if (words.length > 0) {
           const lib = data.libelleSearch || normalizeText(data.libelle);
           const mc  = data.motsCles || [];
-          for (const w of words) { if (!mc.includes(w)&&!lib.includes(w)){match=false;break;} }
+          for (const w of words) { 
+            if (!data.code.includes(w) && !mc.includes(w) && !lib.includes(w)) { match = false; break; } 
+          }
         }
         if (match) seen.set(d.id, { id: d.id, ...data });
       }
     }));
   } catch(e) { console.error(e); }
-
+  
   return [...seen.values()].slice(0, maxResults);
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SYSTÈME DE TOASTS
+// SYSTÈME DE TOASTS ET COMPOSANTS UI
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TOAST_STYLES = {
@@ -196,13 +199,9 @@ function useConfirm() {
   return { confirmState:state, showConfirm, handleConfirm, handleCancel };
 }
 
-// ─── SOUS-COMPOSANTS ──────────────────────────────────────────────────────────
-
 function ModifierChip({ label, active, onChange }) {
   return (
-    <label className={`modifier-chip${active?' modifier-chip--active':''}`}>
-      <input type="checkbox" checked={active} onChange={onChange} style={{display:'none'}} />{label}
-    </label>
+    <label className={`modifier-chip${active?' modifier-chip--active':''}`}><input type="checkbox" checked={active} onChange={onChange} style={{display:'none'}} />{label}</label>
   );
 }
 
@@ -264,8 +263,8 @@ function FeeBox({ feeType, feeValue, onTypeChange, onValueChange }) {
     <div className="fee-box">
       <div className="fee-box__label">Honoraires (DPI)</div>
       <div className="fee-box__tabs">
-        <button className={`fee-tab ${feeType==='amount'?'fee-tab--active':'fee-tab--inactive'}`} onClick={()=>onTypeChange('amount')}>Montant fixe (€)</button>
-        <button className={`fee-tab ${feeType==='percentage'?'fee-tab--active':'fee-tab--inactive'}`} onClick={()=>onTypeChange('percentage')}>Pourcentage (%)</button>
+        <button type="button" className={`fee-tab ${feeType==='amount'?'fee-tab--active':'fee-tab--inactive'}`} onClick={()=>onTypeChange('amount')}>Montant fixe (€)</button>
+        <button type="button" className={`fee-tab ${feeType==='percentage'?'fee-tab--active':'fee-tab--inactive'}`} onClick={()=>onTypeChange('percentage')}>Pourcentage (%)</button>
       </div>
       <input
         type="number"
@@ -343,7 +342,7 @@ function SearchAutocomplete({ specialite, userSecteur, isOptam, onSelect, maxAct
   );
 }
 
-// ─── COMPOSANT PRINCIPAL ──────────────────────────────────────────────────────
+// ─── COMPOSANT PRINCIPAL APP ──────────────────────────────────────────────────
 function App() {
 
   const { toasts, showToast, removeToast }               = useToast();
@@ -356,6 +355,7 @@ function App() {
   const [error, setError]                             = useState('');
   const [consentChecked, setConsentChecked]           = useState(false);
   const [proChecked, setProChecked]                   = useState(false);
+  
   const [email, setEmail]           = useState('');
   const [password, setPassword]     = useState('');
   const [nom, setNom]               = useState('');
@@ -439,7 +439,6 @@ function App() {
   useEffect(() => {
     const params=new URLSearchParams(window.location.search), imp=params.get('import');
     if (imp) { const d=decodeTemplate(imp); if(d) setIncomingTemplate(d); window.history.replaceState(null,'',window.location.pathname); }
-    
     const unsubAuth = onAuthStateChanged(auth, async(cu)=>{
       setUser(cu);
       if (cu) {
@@ -463,11 +462,11 @@ function App() {
       const s=await getDoc(doc(db,"users",uid));
       if (s.exists()) {
         const d=s.data();
-        setNom(d.nom||''); setPrenom(d.prenom||''); setRpps(d.rpps||''); setTelephone(d.telephone||'');
-        setNumeroRue(d.adresse?.numero||''); setNomRue(d.adresse?.rue||'');
-        setCodePostal(d.adresse?.codePostal||''); setVille(d.adresse?.ville||'');
-        setSpecialite(d.specialite||'1'); setSecteur(d.secteur||'2'); setOptam(d.optam||false);
-        setFavoriteActs(d.favoriteActs||[]);
+        setNom(d.nom || ''); setPrenom(d.prenom || ''); setRpps(d.rpps || ''); setTelephone(d.telephone || '');
+        setNumeroRue(d.adresse?.numero || ''); setNomRue(d.adresse?.rue || '');
+        setCodePostal(d.adresse?.codePostal || ''); setVille(d.adresse?.ville || '');
+        setSpecialite(d.specialite || '1'); setSecteur(d.secteur || '2'); setOptam(d.optam || false);
+        setFavoriteActs(d.favoriteActs || []);
       }
     } catch(e) { console.error('loadUserProfile error:', e); }
     finally { setTimeout(() => { initialLoadDone.current = true; }, 800); }
@@ -479,10 +478,10 @@ function App() {
     const timer = setTimeout(async () => {
       try {
         await updateDoc(doc(db,"users",user.uid), {
-          nom: (nom||'').toUpperCase(), prenom: prenom||'', telephone: telephone||'', rpps: rpps||'',
-          specialite: specialite||'1', secteur: secteur||'2', optam: !!optam,
-          favoriteActs,
-          adresse: { numero: numeroRue||'', rue: nomRue||'', codePostal: codePostal||'', ville: ville||'' }
+          nom: (nom || '').toUpperCase(), prenom: (prenom || ''), telephone: (telephone || ''), rpps: (rpps || ''),
+          specialite: (specialite || '1'), secteur: (secteur || '2'), optam: !!optam,
+          favoriteActs: favoriteActs || [],
+          adresse: { numero: (numeroRue || ''), rue: (nomRue || ''), codePostal: (codePostal || ''), ville: (ville || '') }
         });
         setSaveStatus('Enregistré ✓');
         setTimeout(() => setSaveStatus(''), 3000);
@@ -651,105 +650,16 @@ function App() {
     if (ok) { await deleteDoc(doc(db,"users",id)); fetchUsersList(); showToast("Compte supprimé.", 'info'); }
   };
 
-  // ─── HANDLERS AUTH CORRIGÉS ────────────────────────────────────────────────
-
-  // Envoi de mail de réinitialisation
   const handleAdminResetPassword = async(emailToReset) => {
     const cleanEmail = (emailToReset || '').trim();
     if (!cleanEmail) { showToast("Email invalide.", 'error'); return; }
-    const ok = await showConfirm(`Envoyer un lien de réinitialisation à ${cleanEmail} ?`, { confirmLabel:'Envoyer' });
+    const ok=await showConfirm(`Envoyer un lien de réinitialisation à ${cleanEmail} ?`, { confirmLabel:'Envoyer' });
     if (ok) {
       try { 
         await sendPasswordResetEmail(auth, cleanEmail); 
         showToast("Lien de réinitialisation envoyé !", 'success'); 
       }
-      catch(e) { 
-        console.error("Reset pwd admin error:", e);
-        showToast("Erreur lors de l'envoi du mail.", 'error'); 
-      }
-    }
-  };
-
-  const handleResetPassword = async(e) => {
-    e.preventDefault();
-    const cleanEmail = (email || '').trim();
-    if (!cleanEmail) { setError("Veuillez renseigner votre email."); return; }
-    try { 
-      await sendPasswordResetEmail(auth, cleanEmail); 
-      setResetMessage("Lien envoyé ! Vérifiez vos emails (et vos courriers indésirables)."); 
-      setError(''); 
-    }
-    catch(err) { 
-      console.error("Reset pwd error:", err);
-      if (err.code === 'auth/user-not-found') setError("Aucun compte associé à cet email.");
-      else if (err.code === 'auth/invalid-email') setError("Le format de l'email est invalide.");
-      else setError("Erreur réseau ou configuration. Veuillez réessayer.");
-    }
-  };
-
-  // Connexion
-  const handleLogin = async(e) => {
-    e.preventDefault();
-    const cleanEmail = (email || '').trim();
-    try { 
-      const r = await signInWithEmailAndPassword(auth, cleanEmail, password); 
-      setError(''); 
-      // Non-bloquant : on met à jour lastLogin, si ça rate, l'utilisateur est quand même connecté
-      updateDoc(doc(db,"users",r.user.uid),{lastLogin:new Date()}).catch(e=>console.log("Maj lastLogin ignorée", e));
-    }
-    catch (err) { 
-      console.error("Login error:", err);
-      if (err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
-        setError("Email ou mot de passe incorrect.");
-      } else if (err.code === 'auth/too-many-requests') {
-        setError("Compte bloqué temporairement. Cliquez sur Mot de passe oublié.");
-      } else {
-        setError("Erreur de connexion. Vérifiez votre réseau.");
-      }
-    }
-  };
-
-  // Inscription
-  const handleRegister = async(e) => {
-    e.preventDefault();
-    if (!consentChecked||!proChecked) { setError("Veuillez cocher les cases obligatoires."); return; }
-    const cleanEmail = (email || '').trim();
-    try {
-      const r = await createUserWithEmailAndPassword(auth, cleanEmail, password);
-      await setDoc(doc(db,"users",r.user.uid), {
-        nom:(nom||'').toUpperCase(), prenom:prenom||'', email:cleanEmail, rpps:rpps||'', telephone:telephone||'', 
-        specialite:specialite||'1', secteur:secteur||'2', optam:false, 
-        adresse:{numero:numeroRue||'',rue:nomRue||'',codePostal:codePostal||'',ville:ville||''}, 
-        dateCreation:new Date(), lastLogin:new Date(), usageCount:0, favoriteActs:[]
-      });
-      setIsRegistering(false); 
-      setError('');
-    } catch (err) {
-      console.error("Register error:", err);
-      if (err.code==='auth/email-already-in-use') setError("Cette adresse email est déjà utilisée.");
-      else if (err.code==='auth/weak-password') setError("Le mot de passe doit faire au moins 6 caractères.");
-      else if (err.code==='auth/invalid-email') setError("Le format de l'email est invalide.");
-      else setError("Erreur lors de l'inscription. Veuillez réessayer.");
-    }
-  };
-
-  const handleGoogleLogin = async() => {
-    try {
-      const res = await signInWithPopup(auth, new GoogleAuthProvider());
-      const cu = res.user;
-      const s = await getDoc(doc(db,"users",cu.uid));
-      if (!s.exists()) {
-        let pn='', nn='';
-        if (cu.displayName) { const p=cu.displayName.split(' '); pn=p[0]||''; nn=p.slice(1).join(' ').toUpperCase()||''; }
-        else if (cu.email) { pn=cu.email.split('@')[0]; }
-        await setDoc(doc(db,"users",cu.uid),{nom:nn,prenom:pn,email:cu.email,rpps:'',telephone:'',specialite:'1',secteur:'2',optam:false,adresse:{numero:'',rue:'',codePostal:'',ville:''},dateCreation:new Date(),lastLogin:new Date(),usageCount:0,favoriteActs:[]});
-      } else { 
-        updateDoc(doc(db,"users",cu.uid),{lastLogin:new Date()}).catch(e=>console.log(e)); 
-      }
-      setError('');
-    } catch (err) { 
-      console.error("Google auth error:", err);
-      setError("Erreur lors de la connexion avec Google."); 
+      catch { showToast("Impossible d'envoyer l'email.", 'error'); }
     }
   };
 
@@ -758,7 +668,6 @@ function App() {
     if (ok) {
       try {
         await deleteDoc(doc(db,"users",auth.currentUser.uid));
-        // Note: une Cloud Function supprime l'utilisateur Auth automatiquement
         await signOut(auth);
       } catch { showToast("Veuillez vous reconnecter avant de supprimer votre compte.", 'warning'); }
     }
@@ -886,7 +795,7 @@ function App() {
 
       showToast(`${actsToUpload.length} actes enrichis. Envoi vers Firestore...`, 'info', 3000);
       setUploadProgress(40);
-      setUploadStep("Envoi vers Firestore...");
+      setUploadStep("Envoi vers Firestore (Mode Turbo)...");
 
       const CHUNK = 450;
       for (let i = 0; i < actsToUpload.length; i += CHUNK) {
@@ -904,6 +813,80 @@ function App() {
     setIsUploading(false); setUploadProgress(0); setUploadStep('');
   };
 
+  const handleGoogleLogin = async() => {
+    try {
+      const res = await signInWithPopup(auth, new GoogleAuthProvider()), cu = res.user;
+      const s = await getDoc(doc(db,"users",cu.uid));
+      if (!s.exists()) {
+        let pn='', nn='';
+        if (cu.displayName) { const p=cu.displayName.split(' '); pn=p[0]||''; nn=p.slice(1).join(' ').toUpperCase()||''; }
+        else if (cu.email) { pn=cu.email.split('@')[0]; }
+        await setDoc(doc(db,"users",cu.uid),{nom:nn,prenom:pn,email:cu.email,rpps:'',telephone:'',specialite:'1',secteur:'2',optam:false,adresse:{numero:'',rue:'',codePostal:'',ville:''},dateCreation:new Date(),lastLogin:new Date(),usageCount:0,favoriteActs:[]});
+      } else { updateDoc(doc(db,"users",cu.uid),{lastLogin:new Date()}).catch(e=>console.log(e)); }
+      setError('');
+    } catch { setError("Erreur lors de la connexion avec Google."); }
+  };
+
+  const handleLogin = async(e) => {
+    e.preventDefault();
+    const cleanEmail = (email || '').trim();
+    try { 
+      const r = await signInWithEmailAndPassword(auth, cleanEmail, password); 
+      setError(''); 
+      updateDoc(doc(db,"users",r.user.uid),{lastLogin:new Date()}).catch(e=>console.log("Maj lastLogin ignorée", e));
+    }
+    catch (err) { 
+      console.error("Login error:", err);
+      if (err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
+        setError("Email ou mot de passe incorrect.");
+      } else if (err.code === 'auth/too-many-requests') {
+        setError("Compte bloqué temporairement. Cliquez sur Mot de passe oublié.");
+      } else {
+        setError("Erreur de connexion. Vérifiez votre réseau.");
+      }
+    }
+  };
+
+  const handleRegister = async(e) => {
+    e.preventDefault();
+    if (!consentChecked||!proChecked) { setError("Veuillez cocher les cases obligatoires."); return; }
+    const cleanEmail = (email || '').trim();
+    try {
+      const r = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+      await setDoc(doc(db,"users",r.user.uid),{
+        nom:(nom||'').toUpperCase(), prenom:prenom||'', email:cleanEmail, rpps:rpps||'', telephone:telephone||'', 
+        specialite:specialite||'1', secteur:secteur||'2', optam:false, 
+        adresse:{numero:numeroRue||'',rue:nomRue||'',codePostal:codePostal||'',ville:ville||''}, 
+        dateCreation:new Date(), lastLogin:new Date(), usageCount:0, favoriteActs:[]
+      });
+      setIsRegistering(false); 
+      setError('');
+    } catch (err) {
+      console.error("Register error:", err);
+      if (err.code==='auth/email-already-in-use') setError("Cette adresse email est déjà utilisée.");
+      else if (err.code==='auth/weak-password') setError("Le mot de passe doit faire au moins 6 caractères.");
+      else if (err.code==='auth/invalid-email') setError("Le format de l'email est invalide.");
+      else setError("Erreur lors de l'inscription. Veuillez réessayer.");
+    }
+  };
+
+  const handleResetPassword = async(e) => {
+    e.preventDefault();
+    const cleanEmail = (email || '').trim();
+    if (!cleanEmail) { setError("Veuillez renseigner votre email."); return; }
+    try { 
+      await sendPasswordResetEmail(auth, cleanEmail); 
+      setResetMessage("Lien envoyé ! Vérifiez vos emails (et spams)."); 
+      setError(''); 
+    }
+    catch(err) { 
+      console.error("Reset pwd error:", err);
+      if (err.code === 'auth/user-not-found') setError("Aucun compte associé à cet email.");
+      else if (err.code === 'auth/invalid-email') setError("Le format de l'email est invalide.");
+      else setError("Erreur réseau ou configuration. Veuillez réessayer.");
+    }
+  };
+
   const allCategories     = ['Tous',...new Set(templates.map(t=>t.category||'Non classé'))];
   const filteredTemplates = activeCategoryFilter==='Tous' ? templates : templates.filter(t=>(t.category||'Non classé')===activeCategoryFilter);
   const categoryColors    = {'Rachis':'tag--green','Hanche':'tag--blue','Genou':'tag--amber','Épaule':'tag--purple','Partagé':'tag--slate'};
@@ -916,7 +899,6 @@ function App() {
       <p>Développé par Dr Raphaël Jameson</p>
     </div>
   );
-  
   const liveIndicator = (
     <span title="Synchronisation temps réel" style={{display:'inline-block',width:'7px',height:'7px',borderRadius:'50%',background:'var(--emerald-500)',marginLeft:'10px',verticalAlign:'middle',boxShadow:'0 0 0 2px rgba(16,185,129,0.3)'}} />
   );
@@ -1056,7 +1038,7 @@ function App() {
 
       <div className="app-container">
 
-        {/* ── OPTINAV ──────────────────────────────────────────────────── */}
+        {/* ── OPTINAV CCAM ───────────────────────────────────────────── */}
         {activeTab==='browser'&&(
           <div className="card">
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'20px',flexWrap:'wrap',gap:'10px'}}>
@@ -1204,7 +1186,7 @@ function App() {
                   </div>
                 </div>
                 <div style={{display:'flex',justifyContent:'center',alignItems:'center',marginTop:'24px',padding:'12px',background:'var(--sky-50)',borderRadius:'8px'}}>
-                  <span style={{fontSize:'13px',color:saveStatus?.includes('✓')?'var(--emerald-600)':'var(--navy-600)',fontWeight:'600'}}>
+                  <span style={{fontSize:'13px',color:(saveStatus||'').includes('✓')?'var(--emerald-600)':'var(--navy-600)',fontWeight:'600'}}>
                     {saveStatus || 'Vos modifications sont sauvegardées automatiquement.'}
                   </span>
                 </div>
