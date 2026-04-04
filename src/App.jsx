@@ -1,6 +1,5 @@
-// src/App.jsx — Optim'CCAM v6.5 — Version Blindée et Définitive
-// Import intelligent MULTI-FEUILLES : CCAM V82 + Complémentaire
-// Profil anti-crash, Auth corrigée, Recherche 3 lettres dynamique
+// src/App.jsx — Optim'CCAM v6.6 — Version Définitive (Import croisé V82/ATIH + Recherche)
+// Collection test : actes_ccam_v82
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
@@ -16,7 +15,7 @@ import {
   addDoc, orderBy, limit, startAt, endAt, increment, onSnapshot
 } from 'firebase/firestore';
 import { QRCodeCanvas } from 'qrcode.react';
-import * as XLSX from 'xlsx'; // npm install xlsx
+import * as XLSX from 'xlsx';
 
 // ─── CONSTANTES ──────────────────────────────────────────────────────────────
 const ACTES_COLLECTION = "actes_ccam_v82"; 
@@ -63,12 +62,11 @@ const computeActs = (acts, userSecteur, isOptam, userSpecialite) =>
 const computeTotal = (c) => c.reduce((s,a) => s+a.baseRetenue, 0);
 const computeDep   = (ft, fv, base) => ft==='amount' ? (parseFloat(fv)||0) : base*((parseFloat(fv)||0)/100);
 
-// ─── RECHERCHE CCAM CORRIGÉE ──────────────────────────────────────────────────
+// ─── RECHERCHE CCAM ───────────────────────────────────────────────────────────
 const searchCCAM = async (term, specialite, maxResults=20) => {
   if (!term || term.trim().length < 3) return [];
   const nt = normalizeText(term);
   
-  // 1. Recherche par code exact
   if (/^[A-Z]{4}\d{3}$/.test(nt)) {
     try { 
       const s = await getDocs(query(collection(db, ACTES_COLLECTION), where("code", "==", nt))); 
@@ -84,12 +82,10 @@ const searchCCAM = async (term, specialite, maxResults=20) => {
   const seen = new Map();
   const queries = [];
   
-  // 2. Recherche par début de code
   if (/^[A-Z]{1,4}\d{0,3}$/.test(nt)) {
     queries.push(getDocs(query(collection(db, ACTES_COLLECTION), orderBy("code"), startAt(nt), endAt(nt+'\uf8ff'), limit(100))));
   }
   
-  // 3. Recherche par mots-clés
   const words = nt.split(/[^A-Z0-9]+/).filter(w=>w.length>=2);
   if (words.length > 0) {
     const best = words.reduce((a,b)=>a.length>=b.length?a:b);
@@ -100,13 +96,13 @@ const searchCCAM = async (term, specialite, maxResults=20) => {
     const snaps = await Promise.all(queries);
     snaps.forEach(s => s.docs.forEach(d => {
       const data = d.data();
-      // Filtrage par spécialité en local pour éviter les bugs Firebase
       if (data.activite === specialite && !seen.has(d.id)) {
         let match = true;
         if (words.length > 0) {
           const lib = data.libelleSearch || normalizeText(data.libelle);
           const mc  = data.motsCles || [];
           for (const w of words) { 
+            // CORRECTION DE LA RECHERCHE: On vérifie d'abord si le mot correspond au code CCAM
             if (!data.code.includes(w) && !mc.includes(w) && !lib.includes(w)) { match = false; break; } 
           }
         }
@@ -119,7 +115,7 @@ const searchCCAM = async (term, specialite, maxResults=20) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SYSTÈME DE TOASTS ET COMPOSANTS UI
+// SYSTÈME DE TOASTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TOAST_STYLES = {
@@ -650,6 +646,7 @@ function App() {
     if (ok) { await deleteDoc(doc(db,"users",id)); fetchUsersList(); showToast("Compte supprimé.", 'info'); }
   };
 
+  // ─── AUTHENTIFICATION CORRIGÉE (ESPACES + ERREURS EXPLICITES) ─────────────────
   const handleAdminResetPassword = async(emailToReset) => {
     const cleanEmail = (emailToReset || '').trim();
     if (!cleanEmail) { showToast("Email invalide.", 'error'); return; }
@@ -700,25 +697,35 @@ function App() {
     } catch { showToast("Erreur lors de l'export.", "error"); }
   };
 
+  // ─── LECTURE XLSX MULTI-FEUILLES ──────────────────────────
   const readXlsxAllSheets = async (file) => {
     const buffer = await file.arrayBuffer();
     const wb = XLSX.read(buffer, { type: 'array', cellDates: false });
     let allRows = [];
-    for (const sheetName of wb.SheetNames) {
-      const nl = sheetName.toLowerCase();
-      if (nl.includes('présentation')||nl.includes('presentation')||nl.includes('sommaire')) continue;
-      const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: '' });
+
+    for (let sheetName of wb.SheetNames) {
+      const nameLower = sheetName.toLowerCase();
+      if (nameLower.includes('présentation') || nameLower.includes('presentation') || nameLower.includes('sommaire')) {
+        continue;
+      }
+      const ws = wb.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
       if (rows.length > 0) {
-        if (allRows.length === 0) allRows = rows;
-        else allRows = allRows.concat(rows.slice(1));
+        if (allRows.length === 0) {
+          allRows = rows;
+        } else {
+          allRows = allRows.concat(rows.slice(1));
+        }
       }
     }
     return allRows;
   };
 
+  // ─── NOUVEAU MOTEUR D'IMPORT (V82 PRIMAIRE) ──────────────────────────
   const handleImportCCAM = async () => {
-    const v82File  = importFiles.find(f => f.name.toLowerCase().startsWith('ccam_v'));
-    const compFile = importFiles.find(f => f.name.toLowerCase().startsWith('fichier_complementaire_ccam') || f.name.toLowerCase().startsWith('bis'));
+    const v82File   = importFiles.find(f => f.name.toLowerCase().startsWith('ccam_v'));
+    const compFile  = importFiles.find(f => f.name.toLowerCase().startsWith('fichier_complementaire_ccam') || f.name.toLowerCase().startsWith('bis'));
 
     if (!v82File)  { showToast("Fichier CCAM_V82_... introuvable.", "warning", 5000); return; }
     if (!compFile) { showToast("Fichier fichier_complementaire_ccam_... introuvable.", "warning", 5000); return; }
@@ -726,27 +733,13 @@ function App() {
     setIsUploading(true); setUploadProgress(0);
 
     try {
-      setUploadStep("Lecture des tarifs (CCAM V82)...");
-      const tarifsMap = new Map();
-      const v82Rows = await readXlsxAllSheets(v82File);
-      v82Rows.forEach(row => {
-        const code = String(row[0]||'').trim();
-        if (code.length !== 7) return;
-        const actId = String(row[3]||'1').trim();
-        const phaId = String(row[4]||'0').trim();
-        const s1 = parseFloat(String(row[5]||'').replace(',','.')) || 0;
-        const s2 = parseFloat(String(row[6]||'').replace(',','.')) || s1;
-        tarifsMap.set(`${code}_A${actId}_P${phaId}`, { s1, s2 });
-      });
-      showToast(`${tarifsMap.size} tarifs chargés.`, 'info', 2000);
-      setUploadProgress(15);
-
-      setUploadStep("Lecture de l'arborescence CCAM...");
+      // ETAPE 1: DICTIONNAIRE ATIH
+      setUploadStep("Lecture de l'arborescence (Fichier ATIH)...");
       const compRows = await readXlsxAllSheets(compFile);
+      const metadataMap = new Map();
       const sectionNotes = {};
       let currentSectionCode = '';
-      const actsToUpload = [];
-      let currentAct = null;
+      let currentActMeta = null;
 
       for (let i = 1; i < compRows.length; i++) {
         const row  = compRows[i];
@@ -760,16 +753,15 @@ function App() {
         } else if (typo === 'NT' && currentSectionCode) {
           if (text) sectionNotes[currentSectionCode].push(text);
         } else if (typo === 'L') {
-          if (currentAct) actsToUpload.push(currentAct);
-          const code  = String(row[2] ||'').trim();
-          const actId = String(row[11]||'1').trim();
-          const phaId = String(row[12]||'0').trim();
-          const tarif = tarifsMap.get(`${code}_A${actId}_P${phaId}`) || { s1:0, s2:0 };
+          if (currentActMeta) metadataMap.set(currentActMeta.code, currentActMeta);
+          
+          const code = String(row[2]||'').trim();
           const chapNum=String(row[42]||'').trim(), chapTitre=String(row[43]||'').trim();
           const scNum  =String(row[44]||'').trim(), scTitre  =String(row[45]||'').trim();
           const parNum =String(row[46]||'').trim(), parTitre =String(row[47]||'').trim();
           const spNum  =String(row[48]||'').trim(), spTitre  =String(row[49]||'').trim();
           const notesSection = [...(sectionNotes[chapNum]||[]),...(sectionNotes[scNum]||[]),...(sectionNotes[parNum]||[]),...(sectionNotes[spNum]||[])].filter(Boolean);
+          
           const libelleNorm = normalizeText(text);
           const words = libelleNorm.split(/[^A-Z0-9]+/).filter(w=>w.length>=2);
           const mc = new Set();
@@ -777,40 +769,77 @@ function App() {
           ['CALCANEUS/CALCANEUM','CALCANEUM/CALCANEUS','ASTRAGALE/TALUS','TALUS/ASTRAGALE','ROTULE/PATELLA','PATELLA/ROTULE','SCAPULA/OMOPLATE','OMOPLATE/SCAPULA'].forEach(pair=>{
             const [a,b]=pair.split('/'); if(words.includes(a)) mc.add(b);
           });
-          currentAct = {
-            id:`${code}_A${actId}_P${phaId}`, code, libelle:text, activite:actId, phase:phaId,
-            tarifSecteur1:tarif.s1, tarifSecteur2:tarif.s2,
+          
+          currentActMeta = {
+            code, libelle:text, 
             motsCles:Array.from(mc), libelleSearch:libelleNorm,
             chapitreNum:chapNum, chapitreTitre:chapTitre,
             sousChapNum:scNum, sousChapTitre:scTitre,
             paragrapheNum:parNum, paragrapheTitre:parTitre,
             sousParagrapheNum:spNum, sousParagrapheTitre:spTitre,
-            notesSection, notesActe:[],
+            notesSection, notesActe:[]
           };
-        } else if (typo === 'N' && currentAct) {
-          if (text) currentAct.notesActe.push(text);
+        } else if (typo === 'N' && currentActMeta) {
+          if (text) currentActMeta.notesActe.push(text);
         }
       }
-      if (currentAct) actsToUpload.push(currentAct);
+      if (currentActMeta) metadataMap.set(currentActMeta.code, currentActMeta);
 
-      showToast(`${actsToUpload.length} actes enrichis. Envoi vers Firestore...`, 'info', 3000);
+      showToast(`Arborescence lue : ${metadataMap.size} descriptions.`, 'info', 2000);
+      setUploadProgress(15);
+
+      // ETAPE 2 : FUSION AVEC CNAM V82
+      setUploadStep("Fusion avec les tarifs et activités (CCAM V82)...");
+      const v82Rows = await readXlsxAllSheets(v82File);
+      const actsToUpload = [];
+
+      v82Rows.forEach(row => {
+        const code = String(row[0]||'').trim();
+        if (code.length !== 7) return; 
+        const actId = String(row[3]||'1').trim();
+        const phaId = String(row[4]||'0').trim();
+        const s1 = parseFloat(String(row[5]||'').replace(',','.')) || 0;
+        const s2 = parseFloat(String(row[6]||'').replace(',','.')) || s1;
+        
+        const meta = metadataMap.get(code);
+        if (meta) {
+          actsToUpload.push({
+            id: `${code}_A${actId}_P${phaId}`,
+            activite: actId,
+            phase: phaId,
+            tarifSecteur1: s1,
+            tarifSecteur2: s2,
+            ...meta
+          });
+        }
+      });
+
+      showToast(`Génération de ${actsToUpload.length} actes. Envoi en cours...`, 'info', 3000);
       setUploadProgress(40);
       setUploadStep("Envoi vers Firestore (Mode Turbo)...");
 
       const CHUNK = 450;
       for (let i = 0; i < actsToUpload.length; i += CHUNK) {
         const batch = writeBatch(db);
-        actsToUpload.slice(i, i+CHUNK).forEach(a => { const {id,...data}=a; batch.set(doc(db,ACTES_COLLECTION,id),data); });
+        actsToUpload.slice(i, i + CHUNK).forEach(a => {
+          const { id, ...data } = a;
+          batch.set(doc(db, ACTES_COLLECTION, id), data);
+        });
         await batch.commit();
-        setUploadProgress(40 + Math.round((i/actsToUpload.length)*58));
+        setUploadProgress(40 + Math.round((i / actsToUpload.length) * 58));
       }
+
       setUploadProgress(100);
-      showToast(`✅ Import terminé — ${actsToUpload.length} actes enrichis.`, 'success', 6000);
+      showToast(`✅ Import terminé — ${actsToUpload.length} actes combinés.`, 'success', 6000);
+
     } catch (e) {
       console.error("Erreur import CCAM :", e);
-      showToast(`Erreur : ${e.message||"Import échoué. Vérifiez la console."}`, 'error', 6000);
+      showToast(`Erreur : ${e.message || "Import échoué. Vérifiez la console."}`, 'error', 6000);
     }
-    setIsUploading(false); setUploadProgress(0); setUploadStep('');
+
+    setIsUploading(false);
+    setUploadProgress(0);
+    setUploadStep('');
   };
 
   const handleGoogleLogin = async() => {
@@ -818,10 +847,10 @@ function App() {
       const res = await signInWithPopup(auth, new GoogleAuthProvider()), cu = res.user;
       const s = await getDoc(doc(db,"users",cu.uid));
       if (!s.exists()) {
-        let pn='', nn='';
-        if (cu.displayName) { const p=cu.displayName.split(' '); pn=p[0]||''; nn=p.slice(1).join(' ').toUpperCase()||''; }
-        else if (cu.email) { pn=cu.email.split('@')[0]; }
-        await setDoc(doc(db,"users",cu.uid),{nom:nn,prenom:pn,email:cu.email,rpps:'',telephone:'',specialite:'1',secteur:'2',optam:false,adresse:{numero:'',rue:'',codePostal:'',ville:''},dateCreation:new Date(),lastLogin:new Date(),usageCount:0,favoriteActs:[]});
+        let defaultPrenom = "", defaultNom = "";
+        if (cu.displayName) { const p = cu.displayName.split(' '); defaultPrenom = p[0]||""; defaultNom = p.slice(1).join(' ').toUpperCase()||""; }
+        else if (cu.email) { defaultPrenom = cu.email.split('@')[0]; }
+        await setDoc(doc(db,"users",cu.uid),{nom:defaultNom,prenom:defaultPrenom,email:cu.email,rpps:'',telephone:'',specialite:'1',secteur:'2',optam:false,adresse:{numero:'',rue:'',codePostal:'',ville:''},dateCreation:new Date(),lastLogin:new Date(),usageCount:0});
       } else { updateDoc(doc(db,"users",cu.uid),{lastLogin:new Date()}).catch(e=>console.log(e)); }
       setError('');
     } catch { setError("Erreur lors de la connexion avec Google."); }
@@ -833,10 +862,8 @@ function App() {
     try { 
       const r = await signInWithEmailAndPassword(auth, cleanEmail, password); 
       setError(''); 
-      updateDoc(doc(db,"users",r.user.uid),{lastLogin:new Date()}).catch(e=>console.log("Maj lastLogin ignorée", e));
-    }
-    catch (err) { 
-      console.error("Login error:", err);
+      updateDoc(doc(db,"users",r.user.uid),{lastLogin:new Date()}).catch(e=>console.log(e));
+    } catch (err) { 
       if (err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
         setError("Email ou mot de passe incorrect.");
       } else if (err.code === 'auth/too-many-requests') {
@@ -849,7 +876,7 @@ function App() {
 
   const handleRegister = async(e) => {
     e.preventDefault();
-    if (!consentChecked||!proChecked) { setError("Veuillez cocher les cases obligatoires."); return; }
+    if (!consentChecked || !proChecked) { setError("Veuillez cocher les cases obligatoires."); return; }
     const cleanEmail = (email || '').trim();
     try {
       const r = await createUserWithEmailAndPassword(auth, cleanEmail, password);
@@ -862,7 +889,6 @@ function App() {
       setIsRegistering(false); 
       setError('');
     } catch (err) {
-      console.error("Register error:", err);
       if (err.code==='auth/email-already-in-use') setError("Cette adresse email est déjà utilisée.");
       else if (err.code==='auth/weak-password') setError("Le mot de passe doit faire au moins 6 caractères.");
       else if (err.code==='auth/invalid-email') setError("Le format de l'email est invalide.");
@@ -878,12 +904,10 @@ function App() {
       await sendPasswordResetEmail(auth, cleanEmail); 
       setResetMessage("Lien envoyé ! Vérifiez vos emails (et spams)."); 
       setError(''); 
-    }
-    catch(err) { 
-      console.error("Reset pwd error:", err);
+    } catch(err) { 
       if (err.code === 'auth/user-not-found') setError("Aucun compte associé à cet email.");
       else if (err.code === 'auth/invalid-email') setError("Le format de l'email est invalide.");
-      else setError("Erreur réseau ou configuration. Veuillez réessayer.");
+      else setError("Erreur réseau. Veuillez réessayer.");
     }
   };
 
