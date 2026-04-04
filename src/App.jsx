@@ -18,7 +18,7 @@ import { QRCodeCanvas } from 'qrcode.react';
 import * as XLSX from 'xlsx';
 
 // ─── CONSTANTES ──────────────────────────────────────────────────────────────
-const ACTES_COLLECTION = "actes_ccam_v82"; 
+const ACTES_COLLECTION = "actes_ccam"; 
 const LOGO_URL    = "https://www.institutorthopedique.paris/wp-content/uploads/2025/07/CROPinstitut-orthopedique-paris-logo-grand.png";
 const ADMIN_EMAIL = "dr.jameson@rachis.paris";
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
