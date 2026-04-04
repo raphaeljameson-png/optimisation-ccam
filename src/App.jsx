@@ -1,6 +1,5 @@
-// src/App.jsx — Optim'CCAM v6.0
-// Import intelligent : CCAM V82 (XLS/CSV) + fichier_complementaire (XLSX)
-// Base stable : v5.6.1 — Aucune perte de fonction
+// src/App.jsx — Optim'CCAM v5.6 — Navigateur autonome & Codes Favoris
+// Corrections v5.6.1 : --sky-600→--sky-500 | double deleteUser supprimé | userProfile dead state retiré
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
@@ -16,13 +15,13 @@ import {
   addDoc, orderBy, limit, startAt, endAt, increment, onSnapshot
 } from 'firebase/firestore';
 import Papa from 'papaparse';
+import * as XLSX from 'xlsx';
 import { QRCodeCanvas } from 'qrcode.react';
-import * as XLSX from 'xlsx'; // npm install xlsx
 
-// ─── CONSTANTES ──────────────────────────────────────────────────────────────
-const ACTES_COLLECTION = "actes_ccam_v82"; // Isolé pour la version d'essai V6
 const LOGO_URL    = "https://www.institutorthopedique.paris/wp-content/uploads/2025/07/CROPinstitut-orthopedique-paris-logo-grand.png";
-const ADMIN_EMAIL = "dr.jameson@rachis.paris";
+const ADMIN_EMAIL      = "dr.jameson@rachis.paris";
+// Collection Firestore — changer en "actes_ccam_test" pour tester sans toucher la prod
+const ACTES_COLLECTION = "actes_ccam";
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 const normalizeText = (t) => t ? t.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase().trim() : "";
 
@@ -45,21 +44,50 @@ const computeTotal = (c) => c.reduce((s,a) => s+a.baseRetenue, 0);
 const computeDep   = (ft, fv, base) => ft==='amount' ? (parseFloat(fv)||0) : base*((parseFloat(fv)||0)/100);
 
 // ─── RECHERCHE CCAM ───────────────────────────────────────────────────────────
+// specialite = '1' | '2' | '4' → filtre par activité (Simulateur, Favoris)
+// specialite = null             → toutes activités (Navigateur)
 const searchCCAM = async (term, specialite, maxResults=20) => {
   if (!term || term.trim().length < 3) return [];
   const nt = normalizeText(term);
+  const filterByActivite = specialite !== null;
+
+  // 1. Code exact (7 caractères : AAAA999)
   if (/^[A-Z]{4}\d{3}$/.test(nt)) {
-    try { const s=await getDocs(query(collection(db,ACTES_COLLECTION),where("code","==",nt),where("activite","==",specialite))); return s.docs.map(d=>({id:d.id,...d.data()})); }
-    catch { return []; }
+    try {
+      // Sans filtre d'activité (Navigateur) : retourne toutes les activités du code
+      // Avec filtre (Simulateur) : retourne uniquement celle de l'utilisateur
+      const q = filterByActivite
+        ? query(collection(db, ACTES_COLLECTION), where("code","==",nt), where("activite","==",specialite))
+        : query(collection(db, ACTES_COLLECTION), where("code","==",nt));
+      const s = await getDocs(q);
+      return s.docs.map(d=>({id:d.id,...d.data()}));
+    } catch { return []; }
   }
+
   const seen=new Map(), queries=[];
+
+  // 2. Préfixe de code (nécessite un filtre activité pour orderBy)
   if (/^[A-Z]{1,4}\d{0,3}$/.test(nt)) {
-    queries.push(getDocs(query(collection(db,ACTES_COLLECTION),where("activite","==",specialite),orderBy("code"),startAt(nt),endAt(nt+'\uf8ff'),limit(maxResults))));
+    if (filterByActivite) {
+      queries.push(getDocs(query(collection(db, ACTES_COLLECTION),where("activite","==",specialite),orderBy("code"),startAt(nt),endAt(nt+'\uf8ff'),limit(maxResults))));
+    } else {
+      // Sans filtre activité, on cherche parmi A1 (activite chirurgien) par défaut pour les préfixes
+      queries.push(getDocs(query(collection(db, ACTES_COLLECTION),where("activite","==","1"),orderBy("code"),startAt(nt),endAt(nt+'\uf8ff'),limit(maxResults))));
+    }
   }
+
+  // 3. Mots-clés (motsCles)
   const words = nt.split(/[^A-Z0-9]+/).filter(w=>w.length>=2);
   if (words.length>0) {
     const best = words.reduce((a,b)=>a.length>=b.length?a:b);
-    queries.push(getDocs(query(collection(db,ACTES_COLLECTION),where("activite","==",specialite),where("motsCles","array-contains",best),limit(400))));
+    if (filterByActivite) {
+      queries.push(getDocs(query(collection(db, ACTES_COLLECTION),where("activite","==",specialite),where("motsCles","array-contains",best),limit(400))));
+    } else {
+      // Sans filtre : cherche dans toutes les activités en parallèle
+      for (const act of ['1','2','4']) {
+        queries.push(getDocs(query(collection(db, ACTES_COLLECTION),where("activite","==",act),where("motsCles","array-contains",best),limit(150))));
+      }
+    }
   }
   try {
     const snaps = await Promise.all(queries);
@@ -97,16 +125,28 @@ function ToastContainer({ toasts, onRemove }) {
         .toast-item { animation: toastIn 0.28s cubic-bezier(0.34,1.56,0.64,1) forwards; }
         .toast-item.removing { animation: toastOut 0.22s ease-in forwards; }
       `}</style>
-      <div style={{position:'fixed',bottom:'24px',right:'24px',zIndex:9999,display:'flex',flexDirection:'column',gap:'10px',maxWidth:'340px',width:'calc(100vw - 48px)'}}>
+      <div style={{
+        position:'fixed', bottom:'24px', right:'24px', zIndex:9999,
+        display:'flex', flexDirection:'column', gap:'10px',
+        maxWidth:'340px', width:'calc(100vw - 48px)'
+      }}>
         {toasts.map(t => {
           const s = TOAST_STYLES[t.type] || TOAST_STYLES.info;
           return (
-            <div key={t.id} className={`toast-item${t.removing?' removing':''}`}
-              style={{display:'flex',alignItems:'flex-start',gap:'12px',background:s.bg,border:`1px solid ${s.border}`,borderRadius:'10px',padding:'13px 15px',boxShadow:'0 8px 24px rgba(0,0,0,0.3)',cursor:'pointer'}}
-              onClick={()=>onRemove(t.id)}>
-              <span style={{width:'22px',height:'22px',borderRadius:'50%',background:s.border,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'12px',fontWeight:'700',flexShrink:0}}>{s.icon}</span>
-              <span style={{flex:1,fontSize:'13px',color:'#fff',lineHeight:'1.45',fontFamily:'var(--font-body)'}}>{t.message}</span>
-              <span style={{color:'rgba(255,255,255,0.5)',fontSize:'16px',lineHeight:1,flexShrink:0}}>×</span>
+            <div key={t.id} className={`toast-item${t.removing?' removing':''}`} style={{
+              display:'flex', alignItems:'flex-start', gap:'12px',
+              background:s.bg, border:`1px solid ${s.border}`,
+              borderRadius:'10px', padding:'13px 15px',
+              boxShadow:'0 8px 24px rgba(0,0,0,0.3)', cursor:'pointer'
+            }} onClick={()=>onRemove(t.id)}>
+              <span style={{
+                width:'22px', height:'22px', borderRadius:'50%',
+                background:s.border, color:'#fff',
+                display:'flex', alignItems:'center', justifyContent:'center',
+                fontSize:'12px', fontWeight:'700', flexShrink:0
+              }}>{s.icon}</span>
+              <span style={{flex:1, fontSize:'13px', color:'#fff', lineHeight:'1.45', fontFamily:'var(--font-body)'}}>{t.message}</span>
+              <span style={{color:'rgba(255,255,255,0.5)', fontSize:'16px', lineHeight:1, flexShrink:0}}>×</span>
             </div>
           );
         })}
@@ -117,16 +157,19 @@ function ToastContainer({ toasts, onRemove }) {
 
 function useToast() {
   const [toasts, setToasts] = useState([]);
+
   const showToast = useCallback((message, type='info', duration=3500) => {
     const id = Date.now() + Math.random();
     setToasts(prev => [...prev, { id, message, type, removing:false }]);
-    setTimeout(() => setToasts(prev => prev.map(t => t.id===id ? {...t,removing:true} : t)), duration-200);
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id!==id)), duration);
+    setTimeout(() => { setToasts(prev => prev.map(t => t.id===id ? {...t, removing:true} : t)); }, duration - 200);
+    setTimeout(() => { setToasts(prev => prev.filter(t => t.id!==id)); }, duration);
   }, []);
+
   const removeToast = useCallback((id) => {
-    setToasts(prev => prev.map(t => t.id===id ? {...t,removing:true} : t));
+    setToasts(prev => prev.map(t => t.id===id ? {...t, removing:true} : t));
     setTimeout(() => setToasts(prev => prev.filter(t => t.id!==id)), 220);
   }, []);
+
   return { toasts, showToast, removeToast };
 }
 
@@ -137,14 +180,27 @@ function useToast() {
 function ConfirmModal({ state, onConfirm, onCancel }) {
   if (!state.isOpen) return null;
   return (
-    <div style={{position:'fixed',inset:0,background:'rgba(5,15,31,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:8000,padding:'20px',backdropFilter:'blur(2px)'}}>
-      <div style={{background:'var(--color-surface)',borderRadius:'16px',padding:'28px',maxWidth:'380px',width:'100%',boxShadow:'0 20px 60px rgba(0,0,0,0.3)',borderTop:state.danger?'4px solid var(--rose-500)':'4px solid var(--sky-500)'}}>
-        <div style={{fontSize:'15px',fontWeight:'600',color:'var(--color-text-primary)',marginBottom:'8px'}}>{state.title||'Confirmation'}</div>
-        <div style={{fontSize:'14px',color:'var(--color-text-secondary)',lineHeight:'1.5',marginBottom:'24px'}}>{state.message}</div>
-        <div style={{display:'flex',gap:'10px'}}>
-          <button onClick={onCancel} style={{flex:1,padding:'10px',borderRadius:'8px',border:'1px solid var(--color-border)',background:'transparent',color:'var(--color-text-secondary)',fontSize:'13px',fontWeight:'500',cursor:'pointer',fontFamily:'var(--font-body)'}}>Annuler</button>
-          <button onClick={onConfirm} style={{flex:1,padding:'10px',borderRadius:'8px',border:'none',background:state.danger?'var(--rose-500)':'var(--navy-800)',color:'#fff',fontSize:'13px',fontWeight:'600',cursor:'pointer',fontFamily:'var(--font-body)'}}>
-            {state.confirmLabel||'Confirmer'}
+    <div style={{
+      position:'fixed', inset:0, background:'rgba(5,15,31,0.7)',
+      display:'flex', alignItems:'center', justifyContent:'center',
+      zIndex:8000, padding:'20px', backdropFilter:'blur(2px)'
+    }}>
+      <div style={{
+        background:'var(--color-surface)', borderRadius:'16px',
+        padding:'28px', maxWidth:'380px', width:'100%',
+        boxShadow:'0 20px 60px rgba(0,0,0,0.3)',
+        borderTop: state.danger ? '4px solid var(--rose-500)' : '4px solid var(--sky-500)'
+      }}>
+        <div style={{fontSize:'15px', fontWeight:'600', color:'var(--color-text-primary)', marginBottom:'8px'}}>
+          {state.title || 'Confirmation'}
+        </div>
+        <div style={{fontSize:'14px', color:'var(--color-text-secondary)', lineHeight:'1.5', marginBottom:'24px'}}>
+          {state.message}
+        </div>
+        <div style={{display:'flex', gap:'10px'}}>
+          <button onClick={onCancel} style={{flex:1, padding:'10px', borderRadius:'8px', border:'1px solid var(--color-border)', background:'transparent', color:'var(--color-text-secondary)', fontSize:'13px', fontWeight:'500', cursor:'pointer', fontFamily:'var(--font-body)'}}>Annuler</button>
+          <button onClick={onConfirm} style={{flex:1, padding:'10px', borderRadius:'8px', border:'none', background: state.danger ? 'var(--rose-500)' : 'var(--navy-800)', color:'#fff', fontSize:'13px', fontWeight:'600', cursor:'pointer', fontFamily:'var(--font-body)'}}>
+            {state.confirmLabel || 'Confirmer'}
           </button>
         </div>
       </div>
@@ -155,14 +211,17 @@ function ConfirmModal({ state, onConfirm, onCancel }) {
 function useConfirm() {
   const [state, setState] = useState({ isOpen:false, message:'', title:'', danger:false, confirmLabel:'Confirmer' });
   const resolveRef = useRef(null);
+
   const showConfirm = useCallback((message, options={}) => {
     return new Promise((resolve) => {
       resolveRef.current = resolve;
       setState({ isOpen:true, message, title:options.title||'Confirmation', danger:options.danger||false, confirmLabel:options.confirmLabel||'Confirmer' });
     });
   }, []);
+
   const handleConfirm = () => { setState(s=>({...s,isOpen:false})); resolveRef.current?.(true); };
   const handleCancel  = () => { setState(s=>({...s,isOpen:false})); resolveRef.current?.(false); };
+
   return { confirmState:state, showConfirm, handleConfirm, handleCancel };
 }
 
@@ -232,6 +291,13 @@ function DpiCompact({ calculated, totalBase, totalDep, feeValue, feeType }) {
 }
 
 function FeeBox({ feeType, feeValue, onTypeChange, onValueChange }) {
+  const handleChange = (e) => {
+    const raw = parseFloat(e.target.value);
+    // Bloque toute valeur négative ou vide → remet à 0
+    if (e.target.value === '' || e.target.value === '-') { onValueChange(0); return; }
+    if (!isNaN(raw) && raw < 0) { onValueChange(0); return; }
+    onValueChange(e.target.value);
+  };
   return (
     <div className="fee-box">
       <div className="fee-box__label">Honoraires (DPI)</div>
@@ -239,11 +305,22 @@ function FeeBox({ feeType, feeValue, onTypeChange, onValueChange }) {
         <button className={`fee-tab ${feeType==='amount'?'fee-tab--active':'fee-tab--inactive'}`} onClick={()=>onTypeChange('amount')}>Montant fixe (€)</button>
         <button className={`fee-tab ${feeType==='percentage'?'fee-tab--active':'fee-tab--inactive'}`} onClick={()=>onTypeChange('percentage')}>Pourcentage (%)</button>
       </div>
-      <input type="number" className="input--fee" value={feeValue} onChange={e=>onValueChange(e.target.value)} placeholder={feeType==='amount'?'Ex : 3500':'Ex : 250'} />
+      <input
+        type="number"
+        className="input--fee"
+        value={feeValue}
+        onChange={handleChange}
+        min="0"
+        step={feeType==='amount' ? '1' : '0.1'}
+        placeholder={feeType==='amount'?'Ex : 3500':'Ex : 250'}
+        onWheel={e => e.currentTarget.blur()}
+        onKeyDown={e => { if (e.key === '-' || e.key === 'e') e.preventDefault(); }}
+      />
     </div>
   );
 }
 
+// Menu déroulant de recherche réutilisable
 function SearchAutocomplete({ specialite, userSecteur, isOptam, onSelect, maxActs, placeholder="Code CCAM ou mots-clés...", maxResults=20 }) {
   const [term, setTerm]           = useState('');
   const [results, setResults]     = useState([]);
@@ -306,7 +383,7 @@ function SearchAutocomplete({ specialite, userSecteur, isOptam, onSelect, maxAct
       {isOpen && hasSearched && results.length===0 && !isLoading && (
         <div style={{position:'absolute',top:'calc(100% + 4px)',left:0,right:0,background:'var(--color-surface)',border:'1px solid var(--color-border)',borderRadius:'var(--radius-md)',padding:'14px 12px',fontSize:'13px',color:'var(--color-text-muted)',textAlign:'center',boxShadow:'0 8px 24px rgba(15,23,42,0.08)',zIndex:300}}>
           Aucun acte trouvé pour « {term} »<br/>
-          <span style={{fontSize:'11px',opacity:0.7}}>Vérifiez l'onglet Admin → ré-importer les fichiers</span>
+          <span style={{fontSize:'11px',opacity:0.7}}>Vérifiez l'onglet Admin → ré-importer le CSV</span>
         </div>
       )}
     </div>
@@ -320,6 +397,7 @@ function App() {
   const { confirmState, showConfirm, handleConfirm, handleCancel } = useConfirm();
 
   // Auth & profil
+  // FIX : userProfile supprimé — état déclaré mais jamais lu dans le JSX
   const [user, setUser]                               = useState(null);
   const [isRegistering, setIsRegistering]             = useState(false);
   const [isResettingPassword, setIsResettingPassword] = useState(false);
@@ -349,19 +427,15 @@ function App() {
   const [browserView, setBrowserView]               = useState('search');
   const [selectedBrowserAct, setSelectedBrowserAct] = useState(null);
 
-  // Import — 3 fichiers ATIH sélectionnés simultanément
-  const [importFiles, setImportFiles] = useState([]);
+  // Simulateur
   const [isUploading, setIsUploading]           = useState(false);
   const [uploadProgress, setUploadProgress]     = useState(0);
-  const [uploadStep, setUploadStep]             = useState('');
-
-  // Simulateur
   const [selectedActs, setSelectedActs]         = useState([]);
   const [feeType, setFeeType]                   = useState('amount');
   const [feeValue, setFeeValue]                 = useState(0);
   const [interventionName, setInterventionName] = useState('');
 
-  // Favoris
+  // Favoris (Modèles Simulateur)
   const [templates, setTemplates]                       = useState([]);
   const [isLoadingTemplates, setIsLoadingTemplates]     = useState(false);
   const [isEditingFav, setIsEditingFav]                 = useState(false);
@@ -424,8 +498,10 @@ function App() {
         if (cu.email===ADMIN_EMAIL) fetchUsersList();
       } else {
         unsubscribeAll();
+        // FIX : setUserProfile supprimé
         setTemplates([]); setSimulations([]); setUsersList([]);
-        setSelectedBrowserAct(null); setFavoriteActs([]);
+        setSelectedBrowserAct(null);
+        setFavoriteActs([]);
         initialLoadDone.current = false;
       }
     });
@@ -435,6 +511,7 @@ function App() {
   const loadUserProfile = async(uid) => {
     const s=await getDoc(doc(db,"users",uid));
     if (s.exists()) {
+      // FIX : setUserProfile(d) supprimé — l'état était déclaré mais jamais lu
       const d=s.data();
       setNom(d.nom||''); setPrenom(d.prenom||''); setRpps(d.rpps||''); setTelephone(d.telephone||'');
       setNumeroRue(d.adresse?.numero||''); setNomRue(d.adresse?.rue||'');
@@ -445,6 +522,7 @@ function App() {
     }
   };
 
+  // Auto-save profil (debounce 1200ms)
   useEffect(() => {
     if (!initialLoadDone.current || !user) return;
     setSaveStatus('Enregistrement en cours...');
@@ -466,13 +544,15 @@ function App() {
     catch(e) { console.error(e); }
   };
 
+  // Gestion des codes favoris du Navigateur (sauvegarde directe, pas via auto-save)
   const toggleFavoriteAct = async (act) => {
     const isFav = favoriteActs.some(a => a.code === act.code);
     const newFavs = isFav ? favoriteActs.filter(a => a.code !== act.code) : [...favoriteActs, act];
     setFavoriteActs(newFavs);
     showToast(isFav ? "Code retiré de vos favoris." : "Code ajouté à vos favoris !", isFav ? "info" : "success", 2000);
-    try { await updateDoc(doc(db,"users",user.uid), { favoriteActs: newFavs }); }
-    catch { showToast("Erreur lors de la sauvegarde du favori.", "error"); }
+    try {
+      await updateDoc(doc(db, "users", user.uid), { favoriteActs: newFavs });
+    } catch { showToast("Erreur lors de la sauvegarde du favori.", "error"); }
   };
 
   const handleAcceptSharedTemplate = async() => {
@@ -536,11 +616,48 @@ function App() {
   const startCreateFav = () => { setIsEditingFav(true); setCurrentFavId(null); setFavNameInput(''); setFavCategoryInput(''); setFavActsInput([]); setFavFeeType('amount'); setFavFeeValue(0); };
   const startEditFav   = (t) => { setIsEditingFav(true); setCurrentFavId(t.id); setFavNameInput(t.name); setFavCategoryInput(t.category||''); setFavActsInput(t.acts); setFavFeeType(t.feeType||'amount'); setFavFeeValue(t.feeValue||0); };
 
+  // ─── RÈGLES D'INCOMPATIBILITÉ ──────────────────────────────────────────────
+  // Format : chaque paire [CodeA, CodeB] est incompatible — ne peut pas être
+  // associée dans le même acte opératoire selon la nomenclature CCAM.
+  // Source : Notes d'exclusion du fichier CCAM V82 + règles CNAM.
+  // L'admin peut étendre cette liste dans la prochaine version.
+  const INCOMPATIBLE_PAIRS = [
+    // Rachis : geste discal vs geste osseux au même niveau
+    ['LFFA002', 'LHFA016'], // Discectomie lombale + Laminectomie lombale
+    ['LFFA002', 'LFDA009'], // Discectomie lombale + Arthrodèse lombal PLIF
+    ['LFEA002', 'LHFA016'], // Discectomie cervicale + Laminectomie lombale
+    ['LFFA007', 'LFDA009'], // Discectomie thoracique + Arthrodèse
+    // Ajoutez d'autres paires ici selon votre pratique
+  ];
+
+  // Vérifie si l'ajout d'un acte crée une incompatibilité avec les actes déjà présents
+  const checkIncompatibility = (newAct, existingActs) => {
+    for (const existing of existingActs) {
+      for (const [codeA, codeB] of INCOMPATIBLE_PAIRS) {
+        const newCode      = newAct.code.toUpperCase();
+        const existingCode = existing.code.toUpperCase();
+        if (
+          (newCode === codeA && existingCode === codeB) ||
+          (newCode === codeB && existingCode === codeA)
+        ) {
+          return `⚠️ Association non recommandée : ${newCode} et ${existingCode} ne peuvent pas être cotés ensemble selon la nomenclature CCAM.`;
+        }
+      }
+    }
+    return null;
+  };
+
   const addActToSimulatorFromBrowser = (act) => {
-    if (selectedActs.length >= 3) { showToast("Le simulateur est plein (3 actes maximum).", "warning"); setActiveTab('simulator'); return; }
+    if (selectedActs.length >= 3) {
+      showToast("Le simulateur est plein (3 actes maximum).", "warning");
+      setActiveTab('simulator');
+      return;
+    }
+    const warning = checkIncompatibility(act, selectedActs);
+    if (warning) showToast(warning, 'error', 7000);
     setSelectedActs(p => [...p, { ...act, activeModifiers: { J: true } }]);
     setActiveTab('simulator');
-    showToast(`Acte ${act.code} envoyé dans OptiSim.`, 'success');
+    if (!warning) showToast(`Acte ${act.code} envoyé au simulateur.`, 'success');
   };
 
   const saveFavChanges = async() => {
@@ -564,11 +681,22 @@ function App() {
     if (t.feeValue > 0) { setFeeType(t.feeType || 'amount'); setFeeValue(t.feeValue); }
     else                { setFeeType('amount'); setFeeValue(0); }
     setActiveTab('simulator');
-    showToast(`"${t.name}" chargé dans OptiSim.`, 'info', 2500);
+    showToast(`"${t.name}" chargé dans le simulateur.`, 'info', 2500);
   };
 
-  const addActToFav = (act) => { if (favActsInput.length>=3) return; setFavActsInput(p=>[...p,{...act,activeModifiers:{J:true}}]); };
-  const addAct      = (act) => { if (selectedActs.length>=3)  return; setSelectedActs(p=>[...p,{...act,activeModifiers:{J:true}}]); };
+  const addActToFav = (act) => {
+    if (favActsInput.length>=3) return;
+    const warning = checkIncompatibility(act, favActsInput);
+    if (warning) showToast(warning, 'error', 7000);
+    setFavActsInput(p=>[...p,{...act,activeModifiers:{J:true}}]);
+  };
+
+  const addAct = (act) => {
+    if (selectedActs.length>=3) return;
+    const warning = checkIncompatibility(act, selectedActs);
+    if (warning) showToast(warning, 'error', 7000);
+    setSelectedActs(p=>[...p,{...act,activeModifiers:{J:true}}]);
+  };
 
   const toggleSimModifier = (idx,m) => setSelectedActs(p=>{ const n=[...p]; n[idx]={...n[idx],activeModifiers:{...n[idx].activeModifiers,[m]:!n[idx].activeModifiers?.[m]}}; return n; });
   const toggleFavModifier = (idx,m) => setFavActsInput(p=>{ const n=[...p]; n[idx]={...n[idx],activeModifiers:{...n[idx].activeModifiers,[m]:!n[idx].activeModifiers?.[m]}}; return n; });
@@ -620,250 +748,254 @@ function App() {
     const ok=await showConfirm("Vider TOUS les actes CCAM de la base ? Cette action est irréversible.", { danger:true, title:'Nettoyer la base', confirmLabel:'Vider la base' });
     if (!ok) return;
     setIsUploading(true);
-    const snap=await getDocs(collection(db,ACTES_COLLECTION)); let i=0;
+    const snap=await getDocs(collection(db, ACTES_COLLECTION)); let i=0;
     while (i<snap.docs.length) {
       const batch=writeBatch(db);
       snap.docs.slice(i,i+400).forEach(d=>batch.delete(d.ref));
       await batch.commit(); i+=400; setUploadProgress(Math.round((i/snap.docs.length)*100));
     }
-    showToast("Base CCAM nettoyée. Vous pouvez ré-importer les fichiers.", 'info');
+    showToast("Base CCAM nettoyée. Vous pouvez ré-importer le CSV.", 'info');
     setIsUploading(false); setUploadProgress(0);
   };
 
-  // ── LECTURE XLSX/XLS AVEC SHEETJS ─────────────────────────────────────────
-  const readXlsx = async (file, sheetName) => {
-    const buffer = await file.arrayBuffer();
-    const wb = XLSX.read(buffer, { type: 'array', cellDates: false });
-    const wsName = sheetName && wb.SheetNames.includes(sheetName)
-      ? sheetName
-      : wb.SheetNames[0];
-    const ws = wb.Sheets[wsName];
-    // header:1 → tableau de tableaux (indices identiques à openpyxl Python)
-    // defval:'' → cellules vides = chaîne vide (pas undefined)
-    return XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-  };
-
-  // ── LECTURE CSV AVEC PAPAPARSE (fallback V82 CSV) ─────────────────────────
-  const readCsv = (file) => new Promise((res, rej) => {
-    Papa.parse(file, {
-      delimiter: ';',
-      skipEmptyLines: false,  // on garde les lignes vides pour détecter les séparateurs
-      complete: r => res(r.data),
-      error: rej
-    });
-  });
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // MOTEUR D'IMPORT V6.0
-  // Entrées :
-  //   - Fichier 1 : CCAM_V82 (XLS ou CSV) → tarifs Secteur 1/2
-  //   - Fichier 2 : fichier_complementaire_ccam_... (XLSX) → arborescence + notes
+  // ─── IMPORTATION CCAM V82 — LECTURE DIRECTE DU FICHIER XLS OFFICIEL ───────────
+  // Accepte directement le fichier XLS de la CNAM sans aucune conversion préalable.
+  // La bibliothèque SheetJS lit le XLS nativement dans le navigateur.
   //
-  // Algorithme :
-  //   Étape 1 → tarifsMap  : code+activite+phase → {s1, s2}
-  //   Étape 2 → sectionNotes : code_section → [notes NT]  (PILE HIÉRARCHIQUE)
-  //   Étape 3 → actsToUpload : fusion tarifs + arborescence + notes héritées
-  //   Étape 4 → Firestore batch (200 docs/batch)
-  // ══════════════════════════════════════════════════════════════════════════
-  const handleImportCCAM = async () => {
-    // Détection automatique par préfixe de nom de fichier
-    // - CCAM_V* → tarifs (XLS ou CSV, fourni par la CNAM)
-    // - fichier_complementaire_ccam* → arborescence + notes (XLSX, fourni par l'ATIH)
-    // - liste_analytique_ccam* → ignoré (redondant avec fichier_complementaire)
-    const v82File   = importFiles.find(f => f.name.toLowerCase().startsWith('ccam_v'));
-    const compFile  = importFiles.find(f => f.name.toLowerCase().startsWith('fichier_complementaire_ccam') || f.name.toLowerCase().startsWith('bis'));
-    const analFile  = importFiles.find(f => f.name.toLowerCase().startsWith('liste_analytique_ccam'));
+  // Structure parsée ligne par ligne :
+  //   Code 7 chars (AAAA999) | | libellé | 1 | phase | tarif_s1 | tarif_s2 → chirurgien (A1)
+  //   vide ou [modifs]       | | "anesthésie" | 4 | 0  | tarif | tarif      → anesthésiste (A4)
+  //   vide                   | | "Activité 2..." | 2 | 0 | tarif | tarif    → aide opératoire (A2)
+  //   toute autre ligne                                                       → ignorée
+  //
+  // Résultat attendu : ~13 235 documents (8 257 A1 + 4 936 A4 + 42 A2)
+  // ─── IMPORTATION CCAM ─────────────────────────────────────────────────────
+  // MODE 1 — 1 fichier  : XLS V82 officiel CNAM (tarifs A1+A4+A2, ~13 235 actes)
+  // MODE 2 — 2 fichiers : XLS V82 + XLSX complémentaire PMSI
+  //           → notes d'actes, règles de chapitre, arborescence complète
+  //           → ~13 000 actes enrichis (notes, exclusions, inclusions, chapitre/sous-chapitre)
+  //
+  // Comment utiliser :
+  //   Mode 1 : sélectionner uniquement le fichier CCAM_V82_...VF.xls
+  //   Mode 2 : sélectionner les DEUX fichiers simultanément (Ctrl+clic ou Cmd+clic)
+  const handleFileUpload = async (event) => {
+    const files = Array.from(event.target.files);
+    if (!files.length) return;
+    setIsUploading(true); setUploadProgress(1);
 
-    if (!v82File)  { showToast("Fichier CCAM_V82_... introuvable. Nommez-le 'CCAM_V82_...' ou 'CCAM_V...'", "warning", 5000); return; }
-    if (!compFile) { showToast("Fichier fichier_complementaire_ccam_... introuvable.", "warning", 5000); return; }
-    if (analFile)  { showToast("liste_analytique détecté — ignoré (fichier_complementaire est suffisant).", "info", 3000); }
+    // ── Helpers ──────────────────────────────────────────────────────────
+    const parseTarif = (val) => {
+      if (val === null || val === undefined || val === '') return 0;
+      const n = parseFloat(String(val).replace(',', '.').replace(/\s/g, ''));
+      return isNaN(n) ? 0 : n;
+    };
 
-    setIsUploading(true); setUploadProgress(0);
+    const ALIASES = {
+      'CALCANEUS':'CALCANEUM','CALCANEUM':'CALCANEUS',
+      'ASTRAGALE':'TALUS',    'TALUS':'ASTRAGALE',
+      'ROTULE':'PATELLA',     'PATELLA':'ROTULE',
+      'SCAPULA':'OMOPLATE',   'OMOPLATE':'SCAPULA',
+      'COLONNE':'RACHIS',     'RACHIS':'COLONNE',
+      'GENOU':'GONARTHROSE',  'HANCHE':'COXARTHROSE',
+    };
+
+    const buildMotsCles = (libelle, extra = []) => {
+      const norm  = normalizeText(libelle);
+      const words = norm.split(/[^A-Z0-9]+/).filter(w => w.length >= 2);
+      const mc    = new Set();
+      words.forEach(w => {
+        mc.add(w);
+        for (let l = 2; l < w.length; l++) mc.add(w.substring(0, l));
+        if (ALIASES[w]) mc.add(ALIASES[w]);
+      });
+      extra.forEach(a => mc.add(normalizeText(a)));
+      return [...mc];
+    };
+
+    const readXLSX = (file) => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        await new Promise(r => setTimeout(r, 50));
+        const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array', dense: true });
+        resolve(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' }));
+      };
+      reader.onerror = reject;
+      reader.readAsArrayBuffer(file);
+    });
+
+    const uploadBatches = async (docs) => {
+      const CHUNK = 500;
+      for (let i = 0; i < docs.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        docs.slice(i, i + CHUNK).forEach(d => {
+          const { docId, ...data } = d;
+          batch.set(doc(db, ACTES_COLLECTION, docId), data);
+        });
+        await batch.commit();
+        setUploadProgress(Math.round(((i + Math.min(CHUNK, docs.length - i)) / docs.length) * 100));
+        await delay(50);
+      }
+    };
+
+    const CODE_RE = /^[A-Z]{4}\d{3}$/i;
 
     try {
-      // ── ÉTAPE 1 : Lecture du fichier V82 (XLS ou CSV) → tarifsMap ─────
-      setUploadStep("Lecture des tarifs (CCAM V82)...");
-      const tarifsMap = new Map(); // clé: "CODE_A1_P0" → {s1, s2}
+      // Identifier les fichiers
+      const v82File  = files.find(f => /v82|ccam.*vf/i.test(f.name)) || files[0];
+      const compFile = files.find(f => /complement|pmsi/i.test(f.name));
 
-      // SheetJS lit XLS, XLSX et CSV — pas besoin de distinguer
-      const v82Rows = await readXlsx(v82File, null);
+      showToast(`Lecture du fichier V82...`, 'info', 3000);
+      const v82Rows = await readXLSX(v82File);
 
-      v82Rows.forEach(row => {
-        const code = String(row[0] || '').trim();
-        if (code.length !== 7) return; // ignore chapitres et lignes vides
-        const actId = String(row[3] || '1').trim();
-        const phaId = String(row[4] || '0').trim();
-        const raw1  = String(row[5] || '').replace(',', '.');
-        const raw2  = String(row[6] || '').replace(',', '.');
-        const s1 = parseFloat(raw1) || 0;
-        const s2 = parseFloat(raw2) || s1;
-        tarifsMap.set(`${code}_A${actId}_P${phaId}`, { s1, s2 });
-      });
+      if (!compFile) {
+        // ════════════════════════════════════════════════════════════════
+        // MODE 1 — XLS V82 uniquement : tarifs + A1/A4/A2
+        // ════════════════════════════════════════════════════════════════
+        const docs = [];
+        let curCode = null, curLib = null;
 
-      showToast(`${tarifsMap.size} tarifs chargés.`, 'info', 2000);
-      setUploadProgress(15);
+        for (const row of v82Rows) {
+          const code = String(row[0] ?? '').trim();
+          const texte = String(row[2] ?? '').trim();
+          const act   = String(row[3] ?? '').trim();
+          const phase = String(row[4] ?? '').trim() || '0';
+          const s1    = parseTarif(row[5]);
+          const s2    = parseTarif(row[6]) || s1;
 
-      // ── ÉTAPE 2 : Lecture du fichier_complementaire (XLSX) ────────────
-      setUploadStep("Lecture de l'arborescence CCAM...");
-      const compRows = await readXlsx(compFile, 'CCAM_Final_2026');
-      // Row 0 = headers → on commence à Row 1
+          if (CODE_RE.test(code)) {
+            curCode = code.toUpperCase(); curLib = texte;
+            docs.push({ docId:`${curCode}_A1_P${phase}`, code:curCode, libelle:texte, activite:'1', phase, tarifSecteur1:s1, tarifSecteur2:s2, motsCles:buildMotsCles(texte), libelleSearch:normalizeText(texte) });
+          } else if (act === '4' && /anesth/i.test(texte) && s1 > 0 && curCode) {
+            const lib = `Anesthésie — ${curLib}`;
+            docs.push({ docId:`${curCode}_A4_P${phase}`, code:curCode, libelle:lib, activite:'4', phase, tarifSecteur1:s1, tarifSecteur2:s2, motsCles:buildMotsCles(lib,['ANESTHESIE','ANESTH']), libelleSearch:normalizeText(lib) });
+          } else if (act === '2' && s1 > 0 && curCode) {
+            const lib = `Aide opératoire — ${curLib}`;
+            docs.push({ docId:`${curCode}_A2_P${phase}`, code:curCode, libelle:lib, activite:'2', phase, tarifSecteur1:s1, tarifSecteur2:s2, motsCles:buildMotsCles(lib,['AIDE','OPERATOIRE']), libelleSearch:normalizeText(lib) });
+          }
+        }
+        if (!docs.length) { showToast("Fichier non reconnu. Sélectionnez le XLS officiel CNAM.", 'error'); setIsUploading(false); return; }
+        await uploadBatches(docs);
+        const a1=docs.filter(d=>d.activite==='1').length, a4=docs.filter(d=>d.activite==='4').length, a2=docs.filter(d=>d.activite==='2').length;
+        showToast(`✅ ${docs.length} actes — ${a1} chirurgiens · ${a4} anesthésistes · ${a2} aides op.`, 'success', 7000);
 
-      // Pile hiérarchique des notes de section
-      // La clé est le code de section exact (ex: "14", "14.03", "14.03.02")
-      // Un acte hérite des notes de TOUS ses niveaux parents (via cols 42,44,46,48)
-      const sectionNotes = {};    // { "14": ["L'arthrodèse inclut...", ...], ... }
-      let currentSectionCode = '';// code de la section T en cours
+      } else {
+        // ════════════════════════════════════════════════════════════════
+        // MODE 2 — V82 + complémentaire : import enrichi avec notes + arborescence
+        // ════════════════════════════════════════════════════════════════
+        showToast(`Lecture du fichier complémentaire...`, 'info', 3000);
+        const compRows = await readXLSX(compFile);
 
-      const actsToUpload = [];
-      let currentAct = null;
-
-      for (let i = 1; i < compRows.length; i++) {
-        const row  = compRows[i];
-        const typo = String(row[10] || '').trim();
-        const text = String(row[5]  || '').trim();
-
-        if (!typo) continue; // LV (lignes vides de mise en forme)
-
-        if (typo === 'T') {
-          // Nouveau nœud d'arborescence — mémoriser son code (col[0])
-          currentSectionCode = String(row[0] || '').trim();
-          if (currentSectionCode && !sectionNotes[currentSectionCode]) {
-            sectionNotes[currentSectionCode] = [];
+        // Étape A : Construire la carte des tarifs depuis V82
+        const tarifsMap = new Map();
+        let curV82Code = null;
+        for (const row of v82Rows) {
+          const code = String(row[0] ?? '').trim();
+          const act  = String(row[3] ?? '').trim();
+          const ph   = String(row[4] ?? '').trim() || '0';
+          const s1   = parseTarif(row[5]);
+          const s2   = parseTarif(row[6]) || s1;
+          if (CODE_RE.test(code)) {
+            curV82Code = code.toUpperCase();
+            tarifsMap.set(`${curV82Code}_A1_P${ph}`, { s1, s2 });
+          } else if (act === '4' && /anesth/i.test(String(row[2]??'')) && s1 > 0 && curV82Code) {
+            tarifsMap.set(`${curV82Code}_A4_P${ph}`, { s1, s2 });
+          } else if (act === '2' && s1 > 0 && curV82Code) {
+            tarifsMap.set(`${curV82Code}_A2_P${ph}`, { s1, s2 });
           }
         }
 
-        else if (typo === 'NT' && currentSectionCode) {
-          // Note de titre → appartient à la section courante
-          if (text) sectionNotes[currentSectionCode].push(text);
+        // Étape B : Parser le fichier complémentaire (arborescence + notes)
+        // Colonnes clés (0-indexed) :
+        //   0  = code principal (subdivisions) / 2 = code 7 chars
+        //   5  = texte (libellé / note)
+        //   10 = typo (T=titre, NT=note chapitre, L=acte, N=note acte, LV=libellé vide)
+        //   11 = activité  |  12 = phase
+        //   42 = N° chapitre  |  43 = Titre chapitre
+        //   44 = N° sous-chap |  45 = Titre sous-chapitre
+        //   46 = N° paragraphe|  47 = Titre paragraphe
+        const docs = [];
+        let lastDoc = null;
+        let chapTitre = '', sousChapTitre = '', paraTitre = '';
+        let sectionNotes = [];
+
+        for (let i = 1; i < compRows.length; i++) {
+          const row   = compRows[i];
+          const typo  = String(row[10] ?? '').trim();
+          const texte = String(row[5]  ?? '').trim();
+          const code  = String(row[2]  ?? String(row[0] ?? '')).trim();
+          const act   = String(row[11] ?? '').trim() || '1';
+          const ph    = String(row[12] ?? '').trim() || '0';
+
+          if (typo === 'T') {
+            // Nouveau titre de section → réinitialise les notes
+            sectionNotes = [];
+            const ct = String(row[43] ?? '').trim();
+            const st = String(row[45] ?? '').trim();
+            const pt = String(row[47] ?? '').trim();
+            if (ct) { chapTitre = ct; sousChapTitre = ''; paraTitre = ''; }
+            if (st) { sousChapTitre = st; paraTitre = ''; }
+            if (pt)   paraTitre = pt;
+
+          } else if (typo === 'NT' && texte) {
+            // Note de chapitre = règle s'appliquant à tous les actes du chapitre
+            // (inclusions, exclusions, conditions)
+            sectionNotes.push(texte);
+
+          } else if ((typo === 'L' || typo === 'LV') && CODE_RE.test(code)) {
+            // Nouvelle ligne d'acte
+            if (lastDoc) docs.push(lastDoc);
+            const codeUp  = code.toUpperCase();
+            const docId   = `${codeUp}_A${act}_P${ph}`;
+            const tarif   = tarifsMap.get(docId) || { s1: 0, s2: 0 };
+            const libNorm = normalizeText(texte);
+            lastDoc = {
+              docId, code: codeUp, libelle: texte, activite: act, phase: ph,
+              tarifSecteur1: tarif.s1, tarifSecteur2: tarif.s2,
+              motsCles: buildMotsCles(texte), libelleSearch: libNorm,
+              chapTitre, sousChapTitre, paraTitre,
+              notesSection: [...sectionNotes],
+              notesActe: [],
+            };
+            // Créer aussi A4 si présent dans le V82
+            const a4Key = `${codeUp}_A4_P${ph}`;
+            if (tarifsMap.has(a4Key) && !docs.find(d => d.docId === a4Key)) {
+              const libA4 = `Anesthésie — ${texte}`;
+              docs.push({
+                docId: a4Key, code: codeUp, libelle: libA4, activite: '4', phase: ph,
+                tarifSecteur1: tarifsMap.get(a4Key).s1, tarifSecteur2: tarifsMap.get(a4Key).s2,
+                motsCles: buildMotsCles(libA4, ['ANESTHESIE', 'ANESTH']),
+                libelleSearch: normalizeText(libA4),
+                chapTitre, sousChapTitre, paraTitre,
+                notesSection: [...sectionNotes], notesActe: [],
+              });
+            }
+
+          } else if (typo === 'N' && lastDoc && texte) {
+            // Note spécifique à l'acte courant
+            lastDoc.notesActe.push(texte);
+          }
         }
+        if (lastDoc) docs.push(lastDoc);
 
-        else if (typo === 'L') {
-          // Acte facturable → sauvegarder l'acte précédent
-          if (currentAct) actsToUpload.push(currentAct);
-
-          const code    = String(row[2]  || '').trim(); // col 2 = code 7 chars
-          const actId   = String(row[11] || '1').trim(); // col 11 = activité
-          const phaId   = String(row[12] || '0').trim(); // col 12 = phase
-
-          // Tarifs depuis V82
-          const tarif = tarifsMap.get(`${code}_A${actId}_P${phaId}`) || { s1: 0, s2: 0 };
-
-          // Fil d'Ariane (cols 42-49, pré-calculés par l'ATIH dans fichier_complementaire)
-          const chapNum   = String(row[42] || '').trim();
-          const chapTitre = String(row[43] || '').trim();
-          const scNum     = String(row[44] || '').trim();
-          const scTitre   = String(row[45] || '').trim();
-          const parNum    = String(row[46] || '').trim();
-          const parTitre  = String(row[47] || '').trim();
-          const spNum     = String(row[48] || '').trim();
-          const spTitre   = String(row[49] || '').trim();
-
-          // Notes héritées — concaténation des notes de TOUS les niveaux parents
-          // Ex: acte dans 14.03.02.07 hérite de : notes["14"] + notes["14.03"] + notes["14.03.02"] + notes["14.03.02.07"]
-          const notesSection = [
-            ...(sectionNotes[chapNum] || []),
-            ...(sectionNotes[scNum]   || []),
-            ...(sectionNotes[parNum]  || []),
-            ...(sectionNotes[spNum]   || []),
-          ].filter(Boolean);
-
-          // Index de recherche
-          const libelleNorm = normalizeText(text);
-          const words = libelleNorm.split(/[^A-Z0-9]+/).filter(w=>w.length>=2);
-          const mc = new Set();
-          words.forEach(w=>{ mc.add(w); for(let l=2;l<w.length;l++) mc.add(w.substring(0,l)); });
-          // Alias médicaux
-          if (words.includes("CALCANEUS"))  mc.add("CALCANEUM");
-          if (words.includes("CALCANEUM"))  mc.add("CALCANEUS");
-          if (words.includes("ASTRAGALE"))  mc.add("TALUS");
-          if (words.includes("TALUS"))      mc.add("ASTRAGALE");
-          if (words.includes("ROTULE"))     mc.add("PATELLA");
-          if (words.includes("PATELLA"))    mc.add("ROTULE");
-          if (words.includes("SCAPULA"))    mc.add("OMOPLATE");
-          if (words.includes("OMOPLATE"))   mc.add("SCAPULA");
-
-          currentAct = {
-            id: `${code}_A${actId}_P${phaId}`,
-            code,
-            libelle:       text,
-            activite:      actId,
-            phase:         phaId,
-            tarifSecteur1: tarif.s1,
-            tarifSecteur2: tarif.s2,
-            motsCles:      Array.from(mc),
-            libelleSearch: libelleNorm,
-            // Fil d'Ariane
-            chapitreNum:        chapNum,
-            chapitreTitre:      chapTitre,
-            sousChapNum:        scNum,
-            sousChapTitre:      scTitre,
-            paragrapheNum:      parNum,
-            paragrapheTitre:    parTitre,
-            sousParagrapheNum:  spNum,
-            sousParagrapheTitre:spTitre,
-            // Notes
-            notesSection, // héritées des parents
-            notesActe: [], // spécifiques à cet acte (lignes N qui suivent)
-          };
-        }
-
-        else if (typo === 'N' && currentAct) {
-          // Note spécifique à l'acte courant
-          if (text) currentAct.notesActe.push(text);
-        }
-      }
-      // Ne pas oublier le dernier acte
-      if (currentAct) actsToUpload.push(currentAct);
-
-      showToast(`${actsToUpload.length} actes enrichis. Envoi vers Firestore...`, 'info', 3000);
-      setUploadProgress(40);
-
-      // ── ÉTAPE 3 : Envoi Firestore par batch de 200 ────────────────────
-      setUploadStep("Envoi vers Firestore...");
-      const CHUNK = 200; // 200 docs/batch (documents enrichis = plus lourds)
-      for (let i = 0; i < actsToUpload.length; i += CHUNK) {
-        const batch = writeBatch(db);
-        actsToUpload.slice(i, i + CHUNK).forEach(a => {
-          const { id, ...data } = a;
-          batch.set(doc(db, ACTES_COLLECTION, id), data);
-        });
-        await batch.commit();
-        setUploadProgress(40 + Math.round((i / actsToUpload.length) * 58));
-        await delay(80);
+        if (!docs.length) { showToast("Fichier complémentaire non reconnu.", 'error'); setIsUploading(false); return; }
+        await uploadBatches(docs);
+        const a1=docs.filter(d=>d.activite==='1').length, a4=docs.filter(d=>d.activite==='4').length;
+        const avecNotes = docs.filter(d=>d.notesActe?.length>0||d.notesSection?.length>0).length;
+        showToast(`✅ ${docs.length} actes — ${a1} chirurgiens · ${a4} anesthésistes · ${avecNotes} avec notes/règles`, 'success', 8000);
       }
 
-      setUploadProgress(100);
-      showToast(
-        `✅ Import terminé — ${actsToUpload.length} actes avec arborescence et notes complètes.`,
-        'success', 6000
-      );
-
-    } catch (e) {
-      console.error("Erreur import CCAM :", e);
-      showToast(`Erreur : ${e.message || "Import échoué. Vérifiez la console."}`, 'error', 6000);
+    } catch (err) {
+      console.error('Import error:', err);
+      showToast("Erreur pendant l'import. Vérifiez la console.", 'error');
     }
-
-    setIsUploading(false);
-    setUploadProgress(0);
-    setUploadStep('');
+    setIsUploading(false); setUploadProgress(0);
   };
-
-  const handleDeleteAccount = async() => {
-    const ok=await showConfirm("Supprimer définitivement votre compte et toutes vos données ? Cette action est irréversible.", { danger:true, title:'Suppression du compte', confirmLabel:'Supprimer mon compte' });
-    if (ok) {
-      try {
-        await deleteDoc(doc(db,"users",auth.currentUser.uid));
-        await signOut(auth);
-      } catch { showToast("Veuillez vous reconnecter avant de supprimer votre compte.", 'warning'); }
-    }
-  };
-
   const handleGoogleLogin = async() => {
     try {
       const res = await signInWithPopup(auth, new GoogleAuthProvider()), cu = res.user;
       const s = await getDoc(doc(db,"users",cu.uid));
       if (!s.exists()) {
-        let defaultPrenom = "", defaultNom = "";
+        let defaultPrenom = ""; let defaultNom = "";
         if (cu.displayName) { const p = cu.displayName.split(' '); defaultPrenom = p[0]||""; defaultNom = p.slice(1).join(' ').toUpperCase()||""; }
         else if (cu.email) { defaultPrenom = cu.email.split('@')[0]; }
         await setDoc(doc(db,"users",cu.uid),{nom:defaultNom,prenom:defaultPrenom,email:cu.email,rpps:'',telephone:'',specialite:'1',secteur:'2',optam:false,adresse:{numero:'',rue:'',codePostal:'',ville:''},dateCreation:new Date(),lastLogin:new Date(),usageCount:0});
@@ -886,8 +1018,8 @@ function App() {
       await setDoc(doc(db,"users",r.user.uid),{nom:nom.toUpperCase(),prenom,email,rpps,telephone,specialite,secteur:'2',optam:false,adresse:{numero:numeroRue,rue:nomRue,codePostal,ville},dateCreation:new Date(),lastLogin:new Date(),usageCount:0});
       setIsRegistering(false); setError('');
     } catch (err) {
-      if (err.code==='auth/email-already-in-use') setError("Cette adresse email est déjà utilisée.");
-      else if (err.code==='auth/weak-password') setError("Le mot de passe doit faire au moins 6 caractères.");
+      if (err.code === 'auth/email-already-in-use') setError("Cette adresse email est déjà utilisée.");
+      else if (err.code === 'auth/weak-password') setError("Le mot de passe doit faire au moins 6 caractères.");
       else setError("Erreur lors de l'inscription : " + err.message);
     }
   };
@@ -897,6 +1029,21 @@ function App() {
     if (!email) { setError("Veuillez renseigner votre email."); return; }
     try { await sendPasswordResetEmail(auth,email); setResetMessage("Lien envoyé ! Vérifiez vos emails."); setError(''); }
     catch { setError("Impossible d'envoyer l'email. Vérifiez l'adresse."); }
+  };
+
+  const handleDeleteAccount = async() => {
+    const ok=await showConfirm("Supprimer définitivement votre compte et toutes vos données ? Cette action est irréversible.", { danger:true, title:'Suppression du compte', confirmLabel:'Supprimer mon compte' });
+    if (ok) {
+      try {
+        // FIX : On supprime uniquement le doc Firestore.
+        // La Cloud Function "purgeCompteUtilisateur" se déclenche automatiquement
+        // et efface le compte Firebase Auth + les templates + les simulations.
+        // deleteUser() a été retiré pour éviter la double suppression.
+        await deleteDoc(doc(db,"users",auth.currentUser.uid));
+        // Déconnexion immédiate côté client
+        await signOut(auth);
+      } catch { showToast("Veuillez vous reconnecter avant de supprimer votre compte.", 'warning'); }
+    }
   };
 
   const allCategories     = ['Tous',...new Set(templates.map(t=>t.category||'Non classé'))];
@@ -911,6 +1058,7 @@ function App() {
       <p>Développé par Dr Raphaël Jameson</p>
     </div>
   );
+
   const liveIndicator = (
     <span title="Synchronisation temps réel" style={{display:'inline-block',width:'7px',height:'7px',borderRadius:'50%',background:'var(--emerald-500)',marginLeft:'10px',verticalAlign:'middle',boxShadow:'0 0 0 2px rgba(16,185,129,0.3)'}} />
   );
@@ -985,7 +1133,7 @@ function App() {
               <input type="email" placeholder="Email *" value={email} onChange={e=>setEmail(e.target.value)} autoComplete="username" required style={{marginBottom:'12px'}} />
               <input type="password" placeholder="Mot de passe * (min. 6 caractères)" value={password} onChange={e=>setPassword(e.target.value)} autoComplete="new-password" required style={{marginBottom:'12px'}} />
               <input type="text" placeholder="N° RPPS (Optionnel)" value={rpps} onChange={e=>setRpps(e.target.value)} style={{marginBottom:'12px'}} />
-              <div style={{display:'flex',flexDirection:'column',gap:'8px',marginBottom:'16px'}}>
+              <div style={{display:'flex', flexDirection:'column', gap:'8px', marginBottom:'16px'}}>
                 <label className="consent-label">
                   <input type="checkbox" checked={proChecked} onChange={e=>setProChecked(e.target.checked)} required />
                   Je certifie être un professionnel de santé (ou assistant(e)). *
@@ -1032,8 +1180,8 @@ function App() {
       <nav className="app-navbar">
         <div className="app-navbar__logo">Optim'<span>CCAM</span></div>
         <div className="responsive-navbar-buttons">
-          <button className={`nav-btn${activeTab==='browser'?' nav-btn--active':''}`} onClick={()=>setActiveTab('browser')}>OptiNav</button>
-          <button className={`nav-btn${activeTab==='simulator'?' nav-btn--active':''}`} onClick={()=>setActiveTab('simulator')}>OptiSim</button>
+          <button className={`nav-btn${activeTab==='browser'?' nav-btn--active':''}`} onClick={()=>setActiveTab('browser')}>Navigateur</button>
+          <button className={`nav-btn${activeTab==='simulator'?' nav-btn--active':''}`} onClick={()=>setActiveTab('simulator')}>Simulateur</button>
           <button className={`nav-btn${activeTab==='favorites'?' nav-btn--active':''}`} onClick={()=>setActiveTab('favorites')}>Favoris {isLoadingTemplates&&<span style={{fontSize:'10px',opacity:0.6}}>⏳</span>}</button>
           <button className={`nav-btn${activeTab==='profile'?' nav-btn--active':''}`} onClick={()=>setActiveTab('profile')}>Profil</button>
           {auth.currentUser?.email===ADMIN_EMAIL&&<button className={`nav-btn${activeTab==='dashboard'?' nav-btn--active':''}`} onClick={()=>setActiveTab('dashboard')}>Admin</button>}
@@ -1043,113 +1191,118 @@ function App() {
 
       <div className="app-container">
 
-        {/* ── OPTINAV CCAM ───────────────────────────────────────────── */}
+        {/* ── NAVIGATEUR ────────────────────────────────────────────────── */}
         {activeTab==='browser'&&(
           <div className="card">
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'20px',flexWrap:'wrap',gap:'10px'}}>
-              <div className="card__title" style={{margin:0}}>OptiNav CCAM</div>
-              <div style={{background:'var(--slate-100)',padding:'4px',borderRadius:'8px',display:'flex',gap:'4px'}}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '10px' }}>
+              <div className="card__title" style={{ margin: 0 }}>Navigateur CCAM</div>
+              <div className="fee-box__tabs" style={{ background: 'var(--slate-100)', padding: '4px', borderRadius: '8px', margin: 0, display: 'flex', gap: '4px' }}>
                 <button
-                  style={{padding:'6px 12px',borderRadius:'6px',border:'none',cursor:'pointer',fontSize:'13px',fontWeight:'500',background:browserView==='search'?'#fff':'transparent',color:browserView==='search'?'var(--navy-800)':'var(--slate-500)',boxShadow:browserView==='search'?'var(--shadow-sm)':'none'}}
-                  onClick={()=>{setBrowserView('search');setSelectedBrowserAct(null);}}>🔍 Recherche</button>
+                  style={{ padding: '6px 12px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: '500', background: browserView === 'search' ? '#fff' : 'transparent', color: browserView === 'search' ? 'var(--navy-800)' : 'var(--slate-500)', boxShadow: browserView === 'search' ? 'var(--shadow-sm)' : 'none' }}
+                  onClick={() => { setBrowserView('search'); setSelectedBrowserAct(null); }}
+                >🔍 Recherche</button>
                 <button
-                  style={{padding:'6px 12px',borderRadius:'6px',border:'none',cursor:'pointer',fontSize:'13px',fontWeight:'500',background:browserView==='favorites'?'#fff':'transparent',color:browserView==='favorites'?'var(--navy-800)':'var(--slate-500)',boxShadow:browserView==='favorites'?'var(--shadow-sm)':'none'}}
-                  onClick={()=>{setBrowserView('favorites');setSelectedBrowserAct(null);}}>⭐ Mes Favoris ({favoriteActs.length})</button>
+                  style={{ padding: '6px 12px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: '500', background: browserView === 'favorites' ? '#fff' : 'transparent', color: browserView === 'favorites' ? 'var(--navy-800)' : 'var(--slate-500)', boxShadow: browserView === 'favorites' ? 'var(--shadow-sm)' : 'none' }}
+                  onClick={() => { setBrowserView('favorites'); setSelectedBrowserAct(null); }}
+                >⭐ Mes Favoris ({favoriteActs.length})</button>
               </div>
             </div>
 
             {selectedBrowserAct ? (
-              // ── FICHE DÉTAILLÉE D'UN ACTE ────────────────────────────
               <div style={{border:'1px solid var(--color-border)',borderRadius:'var(--radius-md)',padding:'20px',display:'flex',flexDirection:'column',gap:'16px',background:'var(--slate-50)',boxShadow:'var(--shadow-sm)'}}>
 
-                {/* En-tête : code + tarif + bouton fermer */}
+                {/* ── En-tête : code + tarif + fermer ── */}
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-                  <div style={{display:'flex',gap:'12px',alignItems:'center'}}>
+                  <div style={{display:'flex',gap:'12px',alignItems:'center',flexWrap:'wrap'}}>
                     <span className="code-badge" style={{fontSize:'16px',padding:'6px 10px',background:'var(--sky-100)',color:'var(--navy-800)'}}>{selectedBrowserAct.code}</span>
                     <strong style={{color:'var(--sky-500)',fontSize:'18px'}}>
                       {(secteur==='1'||optam)?selectedBrowserAct.tarifSecteur1:selectedBrowserAct.tarifSecteur2} €
                     </strong>
+                    {selectedBrowserAct.activite==='4'&&<span style={{fontSize:'11px',background:'var(--amber-50)',color:'var(--amber-600)',border:'1px solid var(--amber-200)',borderRadius:'4px',padding:'2px 8px',fontWeight:'600'}}>Anesthésiste</span>}
+                    {selectedBrowserAct.activite==='2'&&<span style={{fontSize:'11px',background:'var(--slate-100)',color:'var(--slate-600)',border:'1px solid var(--slate-200)',borderRadius:'4px',padding:'2px 8px',fontWeight:'600'}}>Aide op.</span>}
                   </div>
                   <button className="btn-icon" onClick={()=>setSelectedBrowserAct(null)} title="Fermer">✕</button>
                 </div>
 
-                {/* Fil d'Ariane */}
-                {selectedBrowserAct.chapitreTitre && (
-                  <div style={{fontSize:'11px',color:'var(--color-text-muted)',lineHeight:'1.6'}}>
-                    <span style={{fontWeight:'600',textTransform:'uppercase',letterSpacing:'0.4px'}}>
-                      {selectedBrowserAct.chapitreTitre}
-                      {selectedBrowserAct.sousChapTitre && <span> › {selectedBrowserAct.sousChapTitre}</span>}
-                      {selectedBrowserAct.paragrapheTitre && <span> › {selectedBrowserAct.paragrapheTitre}</span>}
-                      {selectedBrowserAct.sousParagrapheTitre && <span> › {selectedBrowserAct.sousParagrapheTitre}</span>}
-                    </span>
+                {/* ── Arborescence (si disponible) ── */}
+                {selectedBrowserAct.chapTitre && (
+                  <div style={{fontSize:'11px',color:'var(--color-text-muted)',display:'flex',gap:'4px',alignItems:'center',flexWrap:'wrap'}}>
+                    <span style={{background:'var(--slate-100)',padding:'2px 8px',borderRadius:'4px'}}>{selectedBrowserAct.chapTitre}</span>
+                    {selectedBrowserAct.sousChapTitre&&<><span>›</span><span style={{background:'var(--slate-100)',padding:'2px 8px',borderRadius:'4px'}}>{selectedBrowserAct.sousChapTitre}</span></>}
+                    {selectedBrowserAct.paraTitre&&<><span>›</span><span style={{background:'var(--slate-100)',padding:'2px 8px',borderRadius:'4px'}}>{selectedBrowserAct.paraTitre}</span></>}
                   </div>
                 )}
 
-                {/* Libellé complet */}
-                <div style={{fontSize:'14px',fontWeight:'600',color:'var(--color-text-primary)',lineHeight:'1.6',background:'#fff',padding:'16px',borderRadius:'8px',border:'1px solid var(--color-border-soft)'}}>
+                {/* ── Libellé complet ── */}
+                <div style={{fontSize:'14px',color:'var(--color-text-primary)',lineHeight:'1.7',background:'#fff',padding:'16px',borderRadius:'8px',border:'1px solid var(--color-border-soft)',fontWeight:'500'}}>
                   {selectedBrowserAct.libelle}
                 </div>
 
-                {/* Notes spécifiques à l'acte */}
-                {selectedBrowserAct.notesActe && selectedBrowserAct.notesActe.length>0 && (
-                  <div style={{background:'var(--sky-50)',border:'1px solid var(--sky-400)',padding:'14px',borderRadius:'8px'}}>
-                    <div style={{fontSize:'11px',fontWeight:'700',color:'var(--sky-500)',textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>ℹ Notes de l'acte</div>
-                    {selectedBrowserAct.notesActe.map((n,i)=>
-                      <p key={i} style={{fontSize:'13px',color:'var(--navy-700)',margin:'4px 0',lineHeight:'1.55',whiteSpace:'pre-wrap'}}>{n}</p>
-                    )}
+                {/* ── Notes spécifiques à l'acte ── */}
+                {selectedBrowserAct.notesActe?.length>0 && (
+                  <div style={{background:'var(--sky-50)',border:'1px solid var(--sky-200)',borderRadius:'8px',padding:'14px'}}>
+                    <div style={{fontSize:'10px',fontWeight:'700',color:'var(--sky-500)',textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>ℹ️ Notes de l'acte</div>
+                    {selectedBrowserAct.notesActe.map((n,i)=>(
+                      <p key={i} style={{fontSize:'13px',color:'var(--sky-700)',margin:'4px 0',lineHeight:'1.5'}}>{n}</p>
+                    ))}
                   </div>
                 )}
 
-                {/* Règles héritées du chapitre */}
-                {selectedBrowserAct.notesSection && selectedBrowserAct.notesSection.length>0 && (
-                  <div style={{background:'var(--rose-50)',border:'1px solid var(--rose-200)',padding:'14px',borderRadius:'8px'}}>
-                    <div style={{fontSize:'11px',fontWeight:'700',color:'var(--rose-500)',textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>⚠️ Règles de codage du chapitre</div>
-                    {selectedBrowserAct.notesSection.map((n,i)=>
-                      <p key={i} style={{fontSize:'12px',color:'var(--rose-600)',margin:'6px 0',lineHeight:'1.55',whiteSpace:'pre-wrap',borderBottom:'1px dashed var(--rose-100)',paddingBottom:'4px'}}>{n}</p>
-                    )}
+                {/* ── Règles du chapitre (exclusions, inclusions, conditions) ── */}
+                {selectedBrowserAct.notesSection?.length>0 && (
+                  <div style={{background:'var(--rose-50)',border:'1px solid var(--rose-200)',borderRadius:'8px',padding:'14px'}}>
+                    <div style={{fontSize:'10px',fontWeight:'700',color:'var(--rose-600)',textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>⚠️ Règles du chapitre</div>
+                    {selectedBrowserAct.notesSection.map((n,i)=>{
+                      const isExclusion = /exclusion|ne pas|interdit/i.test(n);
+                      const isInclusion = /inclut|comprend|avec ou sans/i.test(n);
+                      return (
+                        <p key={i} style={{fontSize:'13px',color: isExclusion?'var(--rose-700)': isInclusion?'var(--emerald-700)':'var(--slate-600)',margin:'6px 0',lineHeight:'1.5',paddingLeft:'8px',borderLeft:`3px solid ${isExclusion?'var(--rose-400)':isInclusion?'var(--emerald-400)':'var(--slate-300)'}`}}>
+                          {isExclusion?'⛔ ':isInclusion?'✅ ':'ℹ️ '}{n}
+                        </p>
+                      );
+                    })}
                   </div>
                 )}
 
-                {/* Actions */}
+                {/* ── Actions ── */}
                 <div style={{display:'flex',gap:'10px',marginTop:'4px'}}>
                   <button className="btn btn--primary" style={{flex:1}} onClick={()=>addActToSimulatorFromBrowser(selectedBrowserAct)}>
-                    ➕ Ajouter dans OptiSim
+                    ➕ Ajouter au Simulateur
                   </button>
-                  {favoriteActs.some(a=>a.code===selectedBrowserAct.code) ? (
+                  {favoriteActs.some(a=>a.code===selectedBrowserAct.code)?(
                     <button className="btn btn--slate" style={{flex:1}} onClick={()=>toggleFavoriteAct(selectedBrowserAct)}>★ Retirer des favoris</button>
-                  ) : (
+                  ):(
                     <button className="btn btn--warning" style={{flex:1}} onClick={()=>toggleFavoriteAct(selectedBrowserAct)}>☆ Ajouter aux favoris</button>
                   )}
                 </div>
               </div>
-
-            ) : browserView==='search' ? (
+            ) : browserView === 'search' ? (
               <>
-                <div style={{marginBottom:'20px'}}>
-                  <SearchAutocomplete specialite={specialite} userSecteur={secteur} isOptam={optam} onSelect={act=>setSelectedBrowserAct(act)} maxActs={999} maxResults={50} placeholder="Rechercher un acte (ex: NEKA010) ou mots-clés (ex: PROTHESE)..." />
+                <div style={{ marginBottom: '20px' }}>
+                  {/* specialite={null} → recherche toutes activités (A1, A2, A4) sans filtre de rôle */}
+                  <SearchAutocomplete specialite={null} userSecteur={secteur} isOptam={optam} onSelect={(act) => setSelectedBrowserAct(act)} maxActs={999} maxResults={50} placeholder="Rechercher un acte (ex: LFDA009) ou mots-clés (ex: SPONDYLOLISTHESIS)..." />
                 </div>
-                <div style={{textAlign:'center',padding:'40px',color:'var(--color-text-muted)',fontSize:'13px'}}>
-                  Utilisez la barre de recherche pour explorer la nomenclature CCAM complète avec notes et règles de codage.
+                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--color-text-muted)', fontSize: '13px' }}>
+                  Utilisez la barre de recherche ci-dessus pour explorer la nomenclature CCAM.
                 </div>
               </>
             ) : (
-              <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
-                {favoriteActs.length===0 ? (
-                  <div style={{textAlign:'center',padding:'40px',color:'var(--color-text-muted)',fontSize:'13px'}}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {favoriteActs.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '40px', color: 'var(--color-text-muted)', fontSize: '13px' }}>
                     Vous n'avez pas encore de codes favoris. Cherchez un acte et cliquez sur l'étoile pour l'ajouter ici.
                   </div>
                 ) : (
-                  favoriteActs.map(act=>{
-                    const displayTarif=(secteur==='1'||optam)?act.tarifSecteur1:act.tarifSecteur2;
+                  favoriteActs.map(act => {
+                    const displayTarif = (secteur === '1' || optam) ? act.tarifSecteur1 : act.tarifSecteur2;
                     return (
-                      <div key={act.code} onClick={()=>setSelectedBrowserAct(act)}
-                        style={{display:'flex',alignItems:'center',gap:'12px',padding:'12px 16px',background:'#fff',border:'1px solid var(--color-border)',borderRadius:'var(--radius-md)',cursor:'pointer',transition:'all var(--duration-fast)'}}
-                        onMouseEnter={e=>e.currentTarget.style.borderColor='var(--sky-500)'}
-                        onMouseLeave={e=>e.currentTarget.style.borderColor='var(--color-border)'}>
-                        <span style={{color:'var(--amber-500)',fontSize:'18px'}}>★</span>
+                      <div key={act.code} onClick={() => setSelectedBrowserAct(act)} style={{display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', background: '#fff', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', cursor: 'pointer', transition: 'all var(--duration-fast)'}}
+                        onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--sky-500)'}
+                        onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--color-border)'}>
+                        <span style={{ color: 'var(--amber-500)', fontSize: '18px' }}>★</span>
                         <span className="code-badge">{act.code}</span>
-                        <span style={{flex:1,fontSize:'13px',color:'var(--color-text-secondary)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{act.libelle}</span>
-                        <strong style={{color:'var(--color-text-primary)'}}>{displayTarif} €</strong>
+                        <span style={{ flex: 1, fontSize: '13px', color: 'var(--color-text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{act.libelle}</span>
+                        <strong style={{ color: 'var(--color-text-primary)' }}>{displayTarif} €</strong>
                       </div>
                     );
                   })
@@ -1208,8 +1361,8 @@ function App() {
                     </div>
                   </div>
                 </div>
-                <div style={{display:'flex',justifyContent:'center',alignItems:'center',marginTop:'24px',padding:'12px',background:'var(--sky-50)',borderRadius:'8px'}}>
-                  <span style={{fontSize:'13px',color:saveStatus.includes('✓')?'var(--emerald-600)':'var(--navy-600)',fontWeight:'600'}}>
+                <div style={{display:'flex', justifyContent:'center', alignItems:'center', marginTop:'24px', padding:'12px', background:'var(--sky-50)', borderRadius:'8px'}}>
+                  <span style={{fontSize:'13px', color: saveStatus.includes('✓') ? 'var(--emerald-600)' : 'var(--navy-600)', fontWeight:'600'}}>
                     {saveStatus || 'Vos modifications sont sauvegardées automatiquement.'}
                   </span>
                 </div>
@@ -1301,7 +1454,7 @@ function App() {
           </div>
         )}
 
-        {/* ── OPTISIM ────────────────────────────────────────────────── */}
+        {/* ── SIMULATEUR ────────────────────────────────────────────────── */}
         {activeTab==='simulator'&&(
           <div className="responsive-grid-sim">
             <div>
@@ -1310,6 +1463,7 @@ function App() {
                 <SearchAutocomplete specialite={specialite} userSecteur={secteur} isOptam={optam} onSelect={addAct} maxActs={3-selectedActs.length} placeholder="Tapez un code (ex: NEKA010) ou un mot-clé (ex: PROTHESE)..." />
                 {selectedActs.length>=3&&<p style={{fontSize:'12px',color:'var(--color-text-muted)',marginTop:'8px',textAlign:'center'}}>Maximum 3 actes atteint.</p>}
               </div>
+
               {selectedActs.length>0&&(
                 <div className="card">
                   <div className="metrics-row">
@@ -1330,6 +1484,7 @@ function App() {
                 </div>
               )}
             </div>
+
             <div>
               <div className="sidebar-card">
                 <div className="sidebar-card__title">Favoris rapides {liveIndicator}</div>
@@ -1374,7 +1529,7 @@ function App() {
                     <tr key={u.id}>
                       <td>
                         <strong>{u.nom} {u.prenom}</strong><br/>
-                        <span style={{fontSize:'12px',color:'var(--sky-500)',display:'inline-block',marginBottom:'2px'}}>{u.email}</span><br/>
+                        <span style={{fontSize:'12px', color:'var(--sky-500)', display:'inline-block', marginBottom:'2px'}}>{u.email}</span><br/>
                         <span className="text-muted text-xs">RPPS : {u.rpps}</span>
                       </td>
                       <td><span style={{color:'var(--emerald-600)',fontWeight:'500',fontSize:'12px'}}>{u.lastLogin?.seconds?new Date(u.lastLogin.seconds*1000).toLocaleString():'Jamais'}</span></td>
@@ -1390,68 +1545,24 @@ function App() {
                 </tbody>
               </table>
             </div>
-
-            {/* ─── IMPORT CCAM V6 ─────────────────────────────────────── */}
             <div className="maintenance-box">
-              <div className="card__label" style={{marginBottom:'16px'}}>
-                Import CCAM V6 — Fusion intelligente
+              <div className="card__label" style={{marginBottom:'8px'}}>
+                Importation CCAM V82
               </div>
-
-              {/* Sélection des 3 fichiers ATIH en une seule fois */}
-              <div style={{marginBottom:'16px',padding:'16px',background:'#f0f9ff',borderRadius:'8px',border:'1px solid var(--sky-400)'}}>
-                <div style={{fontSize:'12px',fontWeight:'700',color:'var(--navy-600)',marginBottom:'6px'}}>
-                  📂 Sélectionnez les 2 ou 3 fichiers ATIH simultanément
-                </div>
-                <div style={{fontSize:'11px',color:'var(--color-text-muted)',marginBottom:'10px',lineHeight:'1.6'}}>
-                  • <strong>CCAM_V82_...</strong> (XLS) — tarifs Secteur 1/2 — CNAM<br/>
-                  • <strong>fichier_complementaire_ccam_...</strong> (XLSX) — arborescence + notes — ATIH<br/>
-                  • <em>liste_analytique_ccam_... (XLSX) — optionnel, ignoré automatiquement</em>
-                </div>
-                <input
-                  type="file"
-                  multiple
-                  accept=".xls,.xlsx,.csv"
-                  onChange={e => setImportFiles(Array.from(e.target.files))}
-                  style={{width:'100%'}}
-                />
-                {importFiles.length > 0 && (
-                  <div style={{marginTop:'8px',display:'flex',flexDirection:'column',gap:'3px'}}>
-                    {importFiles.map((f,i) => (
-                      <div key={i} style={{fontSize:'12px',color:'var(--emerald-600)',fontWeight:'500'}}>
-                        ✓ {f.name} ({(f.size/1024/1024).toFixed(1)} MB)
-                      </div>
-                    ))}
-                  </div>
-                )}
+              <div style={{fontSize:'12px',color:'var(--color-text-secondary)',marginBottom:'12px',background:'var(--sky-50)',border:'1px solid var(--sky-200)',borderRadius:'8px',padding:'10px 14px'}}>
+                <strong style={{color:'var(--navy-700)'}}>Mode 1 — XLS V82 seul</strong> : sélectionner <code>CCAM_V82_...VF.xls</code><br/>
+                <strong style={{color:'var(--emerald-700)'}}>Mode 2 — Enrichi (recommandé)</strong> : sélectionner les <strong>2 fichiers simultanément</strong> (Ctrl+clic) :<br/>
+                <span style={{paddingLeft:'12px'}}>• <code>CCAM_V82_...VF.xls</code> + <code>fichier_complementaire_...xlsx</code></span><br/>
+                <span style={{color:'var(--emerald-600)',fontWeight:'500'}}>→ Ajoute notes, exclusions, arborescence dans le Navigateur</span>
               </div>
-
-              {/* Boutons d'action */}
-              <div style={{display:'flex',gap:'10px',flexWrap:'wrap'}}>
-                <button
-                  className="btn btn--primary"
-                  style={{flex:2}}
-                  onClick={handleImportCCAM}
-                  disabled={isUploading || importFiles.length < 2}
-                >
-                  {isUploading ? `⏳ ${uploadStep}` : '🚀 Lancer la fusion'}
-                </button>
-                <button
-                  className="btn btn--danger"
-                  style={{flex:1,border:'1px solid var(--rose-500)',background:'transparent',color:'var(--rose-500)'}}
-                  onClick={handleClearDatabase}
-                  disabled={isUploading}
-                >
-                  Vider la base
-                </button>
+              <div style={{display:'flex',gap:'10px',flexWrap:'wrap',alignItems:'center'}}>
+                <input type="file" accept=".xls,.xlsx,.csv" multiple onChange={handleFileUpload} style={{flex:1,minWidth:'200px'}} />
+                <button className="btn btn--danger" style={{border:'1px solid var(--rose-500)',background:'transparent',color:'var(--rose-500)'}} onClick={handleClearDatabase}>Nettoyer</button>
               </div>
-
-              {/* Barre de progression */}
-              {isUploading && (
-                <div style={{marginTop:'16px'}}>
-                  <div className="progress-bar">
-                    <div className="progress-bar__fill" style={{width:`${uploadProgress}%`,transition:'width 0.3s'}} />
-                  </div>
-                  <p className="progress-bar__label">{uploadStep} — {uploadProgress}% — Ne fermez pas cette page</p>
+              {isUploading&&(
+                <div style={{marginTop:'12px'}}>
+                  <div className="progress-bar"><div className="progress-bar__fill" style={{width:`${uploadProgress}%`}} /></div>
+                  <p className="progress-bar__label">Progression : {uploadProgress}% — Ne fermez pas cette page</p>
                 </div>
               )}
             </div>

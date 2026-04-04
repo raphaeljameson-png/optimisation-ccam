@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "opticcam",
     "public": "dist",
     "ignore": [
       "firebase.json",
@@ -25,7 +26,7 @@
         "node_modules",
         ".git",
         "firebase-debug.log",
-        "firebase-debug.*.log",
+        "firebase-debug.log",
         "*.local"
       ]
     }
