@@ -95,23 +95,30 @@ const searchCCAM = async (term, specialite, maxResults=20) => {
   try {
     const snaps = await Promise.all(queries);
     snaps.forEach(s => s.docs.forEach(d => {
+      if (seen.has(d.id)) return;
       const data = d.data();
-      if (data.activite === specialite && !seen.has(d.id)) {
-        let match = true;
-        if (words.length > 0) {
-          const lib = data.libelleSearch || normalizeText(data.libelle);
-          const mc  = data.motsCles || [];
-          for (const w of words) { 
-            // CORRECTION DE LA RECHERCHE: On vérifie d'abord si le mot correspond au code CCAM
-            if (!data.code.includes(w) && !mc.includes(w) && !lib.includes(w)) { match = false; break; } 
-          }
+      let match = true;
+      if (words.length > 0) {
+        const lib = data.libelleSearch || normalizeText(data.libelle);
+        const mc  = data.motsCles || [];
+        const code = data.code || '';
+        for (const w of words) { 
+          if (!code.includes(w) && !mc.includes(w) && !lib.includes(w)) { match = false; break; } 
         }
-        if (match) seen.set(d.id, { id: d.id, ...data });
       }
+      if (match) seen.set(d.id, { id: d.id, ...data });
     }));
   } catch(e) { console.error(e); }
   
-  return [...seen.values()].slice(0, maxResults);
+  // Trier : priorité aux actes dont l'activité correspond au profil
+  const results = [...seen.values()];
+  results.sort((a, b) => {
+    const aMatch = a.activite === specialite ? 0 : 1;
+    const bMatch = b.activite === specialite ? 0 : 1;
+    return aMatch - bMatch;
+  });
+  
+  return results.slice(0, maxResults);
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -725,10 +732,13 @@ function App() {
   // ─── NOUVEAU MOTEUR D'IMPORT (V82 PRIMAIRE) ──────────────────────────
   const handleImportCCAM = async () => {
     const v82File   = importFiles.find(f => f.name.toLowerCase().startsWith('ccam_v'));
-    const compFile  = importFiles.find(f => f.name.toLowerCase().startsWith('fichier_complementaire_ccam') || f.name.toLowerCase().startsWith('bis'));
+    const compFile  = importFiles.find(f => {
+      const n = f.name.toLowerCase();
+      return n.startsWith('fichier_complementaire_ccam') || n.startsWith('liste_analytique') || n.startsWith('bis');
+    });
 
     if (!v82File)  { showToast("Fichier CCAM_V82_... introuvable.", "warning", 5000); return; }
-    if (!compFile) { showToast("Fichier fichier_complementaire_ccam_... introuvable.", "warning", 5000); return; }
+    if (!compFile) { showToast("Fichier complémentaire (fichier_complementaire_ccam ou liste_analytique) introuvable.", "warning", 5000); return; }
 
     setIsUploading(true); setUploadProgress(0);
 
@@ -766,6 +776,12 @@ function App() {
           const words = libelleNorm.split(/[^A-Z0-9]+/).filter(w=>w.length>=2);
           const mc = new Set();
           words.forEach(w=>{ mc.add(w); for(let l=2;l<w.length;l++) mc.add(w.substring(0,l)); });
+          // Ajouter les préfixes du code CCAM pour la recherche par début de code
+          if (code && code.length >= 3) {
+            const codeUp = code.toUpperCase();
+            for(let l=2; l<=codeUp.length; l++) mc.add(codeUp.substring(0,l));
+            mc.add(codeUp);
+          }
           ['CALCANEUS/CALCANEUM','CALCANEUM/CALCANEUS','ASTRAGALE/TALUS','TALUS/ASTRAGALE','ROTULE/PATELLA','PATELLA/ROTULE','SCAPULA/OMOPLATE','OMOPLATE/SCAPULA'].forEach(pair=>{
             const [a,b]=pair.split('/'); if(words.includes(a)) mc.add(b);
           });
@@ -1398,7 +1414,7 @@ function App() {
                 <div style={{fontSize:'12px',fontWeight:'700',color:'var(--navy-600)',marginBottom:'6px'}}>📂 Sélectionnez les 2 fichiers simultanément (Ctrl+clic)</div>
                 <div style={{fontSize:'11px',color:'var(--color-text-muted)',marginBottom:'10px',lineHeight:'1.6'}}>
                   • <strong>CCAM_V82_...</strong> (XLS) — tarifs Secteur 1/2<br/>
-                  • <strong>fichier_complementaire_ccam_...</strong> (XLSX) — arborescence + notes
+                  • <strong>fichier_complementaire_ccam_...</strong> ou <strong>liste_analytique_ccam_...</strong> (XLSX) — arborescence + notes
                 </div>
                 <input type="file" multiple accept=".xls,.xlsx,.csv" onChange={e=>setImportFiles(Array.from(e.target.files))} style={{width:'100%'}} />
                 {importFiles.length>0&&(
